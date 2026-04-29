@@ -192,8 +192,20 @@ def _build_target_from_minutes(target_df, target_profile, sid_col):
         last_col = sorted(available, key=lambda x: x[0])[-1][1]
         target_series = minute_values[last_col]
 
+    elif mode == "per_minute":
+        # une ligne par (sujet, minute)
+        tmp = minute_values.copy()
+        tmp.insert(0, "subject_id", target_df[sid_col].astype(str).values)
+        long = tmp.melt(id_vars="subject_id", value_vars=minute_cols, var_name="_col", value_name="target")
+        long["minute"] = long["_col"].map(lambda c: minute_map.get(c))
+        long = long.dropna(subset=["subject_id", "target", "minute"])
+        long["minute"] = long["minute"].astype(int)
+        return long[["subject_id", "minute", "target"]].reset_index(drop=True)
+
     else:
-        raise ValueError("target_mode doit etre 'fixed_minute', 'mean_all_minutes', 'mean_range' ou 'last_minute'.")
+        raise ValueError(
+            "target_mode doit etre 'fixed_minute', 'mean_all_minutes', 'mean_range', 'last_minute' ou 'per_minute'."
+        )
 
     out = pd.DataFrame({"subject_id": target_df[sid_col].astype(str), "target": target_series})
     out = out.dropna(subset=["subject_id", "target"])
@@ -250,7 +262,18 @@ def add_target(features_df, target_profile):
     t = _build_target_table(target_df, target_profile)
     merged = features_df.copy()
     merged["subject_id"] = merged["subject_id"].astype(str)
-    merged = merged.merge(t, on="subject_id", how="inner")
+
+    if "minute" in t.columns:
+        minute_col = target_profile.get("minute_col", "minute")
+        if minute_col not in merged.columns:
+            raise ValueError(
+                f"Colonne minute '{minute_col}' introuvable dans les features. "
+                "Ajoute 'minute_col' dans TARGET_PROFILE pour pointer vers la colonne minute des features."
+            )
+        merged["minute"] = merged[minute_col].astype(int)
+        merged = merged.merge(t, on=["subject_id", "minute"], how="inner")
+    else:
+        merged = merged.merge(t, on="subject_id", how="inner")
 
     if merged.empty:
         raise ValueError(
