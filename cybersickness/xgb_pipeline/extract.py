@@ -249,7 +249,13 @@ def add_target(features_df, target_profile):
 
     t = _build_target_table(target_df, target_profile)
     merged = features_df.copy()
-    merged["subject_id"] = merged["subject_id"].astype(str)
+
+    def _norm_sid(s):
+        s = str(s).strip()
+        return str(int(s)) if s.isdigit() else s
+
+    merged["subject_id"] = merged["subject_id"].apply(_norm_sid)
+    t["subject_id"] = t["subject_id"].apply(_norm_sid)
     merged = merged.merge(t, on="subject_id", how="inner")
 
     if merged.empty:
