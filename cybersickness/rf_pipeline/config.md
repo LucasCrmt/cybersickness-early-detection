@@ -54,11 +54,13 @@ TARGET_PROFILE = {
     "xlsx_path": r"../data/Questionnaires/FMS1_org.xlsx",
     "sheet_name": "Feuil1",
     "target_col": "target",
-    "target_mode": "fixed_minute",  # fixed_minute | mean_all_minutes | mean_range | last_minute
-    "target_minute": 14,
-    "minute_start": 1,
-    "minute_end": 14,
+    "target_mode": "fixed_minute",  # fixed_minute / mean_all_minutes / mean_range / last_minute / per_minute
+    "target_minute": 14,            # utilisé par fixed_minute
+    "minute_start": 1,              # utilisé par mean_range
+    "minute_end": 14,               # utilisé par mean_range
     "minute_columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+    # per_minute uniquement : nom de la colonne minute dans les features (défaut "minute")
+    # "minute_col": "minute",
 }
 
 MODEL_PROFILE = {
