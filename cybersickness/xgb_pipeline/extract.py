@@ -250,9 +250,12 @@ def add_target(features_df, target_profile):
     t = _build_target_table(target_df, target_profile)
     merged = features_df.copy()
 
+    _SID_CORRECTIONS = {"GG3634": "GG34"}
+
     def _norm_sid(s):
         s = str(s).strip()
-        return str(int(s)) if s.isdigit() else s
+        s = str(int(s)) if s.isdigit() else s
+        return _SID_CORRECTIONS.get(s, s)
 
     merged["subject_id"] = merged["subject_id"].apply(_norm_sid)
     t["subject_id"] = t["subject_id"].apply(_norm_sid)
