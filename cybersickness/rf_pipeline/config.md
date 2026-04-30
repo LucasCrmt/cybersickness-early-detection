@@ -45,6 +45,7 @@ PREPROCESS_PROFILE = {
     "imputation_strategy": "median",
     "drop_low_information_features": True,
     "min_valid_features": 1,
+    "normalization": None,  # None / "standard" / "minmax"
 }
 
 TARGET_PROFILE = {
@@ -61,6 +62,24 @@ TARGET_PROFILE = {
     "minute_columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
     # per_minute uniquement : nom de la colonne minute dans les features (défaut "minute")
     # "minute_col": "minute",
+
+    # Discrétisation (optionnelle, pour classification)
+    # Requiert task_type = "classification" dans MODEL_PROFILE
+    # bins  : bornes des intervalles (N+1 valeurs pour N classes)
+    # include_lowest=True -> la borne inférieure est incluse dans la 1re classe
+    # labels: noms des classes, dans l'ordre croissant des bins
+    #
+    # Exemple 3 classes (low 0-5 / medium 6-10 / high 11-20) :
+    # "discretize": {
+    #     "bins":   [0, 5, 10, 20],
+    #     "labels": ["low", "medium", "high"],
+    # },
+    #
+    # Exemple 4 classes (low 0-4 / medium 5-8 / high 9-12 / very_high 13-20) :
+    # "discretize": {
+    #     "bins":   [0, 4, 8, 12, 20],
+    #     "labels": ["low", "medium", "high", "very_high"],
+    # },
 }
 
 MODEL_PROFILE = {
@@ -78,7 +97,7 @@ EVAL_PROFILE = {
 }
 
 OUTPUT_PROFILE = {
-    "output_dir": r"../outputs/random_forest_modulaire",
+    "output_dir": r"../data/outputs/random_forest_modulaire",
     "save_model_card": True,
 }
 ```
