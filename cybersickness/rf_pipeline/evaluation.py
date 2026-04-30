@@ -30,9 +30,11 @@ def evaluate_test_set(final_model, X_test_imp, y_test, model_profile, show_plots
         report = classification_report(y_test, pred_test, zero_division=0)
 
         if show_plots:
-            cm = confusion_matrix(y_test, pred_test)
+            labels = sorted(set(y_test) | set(pred_test), key=str)
+            cm = confusion_matrix(y_test, pred_test, labels=labels)
             plt.figure(figsize=(8, 6))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                        xticklabels=labels, yticklabels=labels)
             plt.title("Matrice de confusion - Test")
             plt.xlabel("Predit")
             plt.ylabel("Reel")
