@@ -3,6 +3,33 @@ import pandas as pd
 
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+
+def apply_target_discretization(df, target_profile):
+    disc = target_profile.get("discretize")
+    if disc is None:
+        return df
+
+    bins = disc["bins"]
+    labels = disc["labels"]
+
+    if len(labels) != len(bins) - 1:
+        raise ValueError(
+            f"'labels' doit avoir exactement {len(bins) - 1} elements pour {len(bins)} bornes. "
+            f"Recu: {len(labels)} labels."
+        )
+
+    out = df.copy()
+    out["target"] = pd.cut(
+        pd.to_numeric(out["target"], errors="coerce"),
+        bins=bins,
+        labels=labels,
+        include_lowest=True,
+        right=True,
+    )
+    out = out.dropna(subset=["target"])
+    return out
 
 
 def apply_preprocess(df, preprocess_profile):
@@ -89,6 +116,18 @@ def prepare_splits_and_impute(dataset_df, feature_cols, preprocess_profile, mode
     X_val_imp = imputer.transform(X_val)
     X_test_imp = imputer.transform(X_test)
 
+    scaler = None
+    norm = preprocess_profile.get("normalization")
+    if norm == "standard":
+        scaler = StandardScaler()
+    elif norm == "minmax":
+        scaler = MinMaxScaler()
+
+    if scaler is not None:
+        X_train_imp = scaler.fit_transform(X_train_imp)
+        X_val_imp = scaler.transform(X_val_imp)
+        X_test_imp = scaler.transform(X_test_imp)
+
     return {
         "X_train_imp": X_train_imp,
         "X_val_imp": X_val_imp,
@@ -100,4 +139,5 @@ def prepare_splits_and_impute(dataset_df, feature_cols, preprocess_profile, mode
         "val_idx": val_idx,
         "test_idx": test_idx,
         "imputer": imputer,
+        "scaler": scaler,
     }
