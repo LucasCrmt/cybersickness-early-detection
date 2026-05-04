@@ -60,7 +60,7 @@ def plot_split_report(dataset_df, train_idx, val_idx, test_idx, model_profile):
     plt.show()
 
 
-def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, top_n_box=8):
+def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, top_n_box=8, target_profile=None):
     """
     Visualisations de l'espace de features :
     - matrice de corrélation (top features par variance)
@@ -101,7 +101,12 @@ def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, 
     fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(14, 4 * n_rows))
     axes = axes.flatten()
 
-    target_order = sorted(dataset_df["target"].dropna().unique(), key=str)
+    _configured_order = (target_profile.get("discretize") or {}).get("labels") if target_profile else None
+    if _configured_order is not None:
+        _present = set(dataset_df["target"].dropna().unique())
+        target_order = [c for c in _configured_order if c in _present]
+    else:
+        target_order = sorted(dataset_df["target"].dropna().unique(), key=str)
     for i, col in enumerate(cols_box):
         sns.violinplot(
             data=dataset_df, x="target", y=col, order=target_order,

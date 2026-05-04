@@ -3,34 +3,60 @@ from copy import deepcopy
 import numpy as np
 import pandas as pd
 
-from xgboost import XGBClassifier, XGBRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_score
 from sklearn.model_selection import ParameterGrid
+from xgboost import XGBClassifier, XGBRegressor
+
+_VALID_MODEL_TYPES = {"random_forest", "xgboost"}
+
+
+def _get_model_type(model_profile):
+    mt = model_profile.get("model_type", "random_forest").lower()
+    if mt not in _VALID_MODEL_TYPES:
+        raise ValueError(f"model_type invalide: '{mt}'. Valeurs acceptées: {_VALID_MODEL_TYPES}")
+    return mt
 
 
 def get_search_space(task_type, model_profile=None):
-    return {
-        "n_estimators": [100, 300],
-        "max_depth": [3, 6],
-        "learning_rate": [0.05, 0.1],
-        "subsample": [0.8, 1.0],
-        "colsample_bytree": [0.8, 1.0],
+    mt = _get_model_type(model_profile or {})
+
+    if mt == "xgboost":
+        return {
+            "n_estimators": [100, 300],
+            "max_depth": [3, 6],
+            "learning_rate": [0.05, 0.1],
+            "subsample": [0.8, 1.0],
+            "colsample_bytree": [0.8, 1.0],
+        }
+
+    # random_forest
+    common = {
+        "n_estimators": [200, 500],
+        "max_depth": [None, 10, 20],
+        "min_samples_split": [2, 5],
+        "min_samples_leaf": [1, 2],
+        "max_features": ["sqrt", "log2"],
     }
+    if task_type == "classification":
+        class_weight = "balanced" if model_profile is None else model_profile.get("class_weight", "balanced")
+        common["class_weight"] = [class_weight]
+    return common
 
 
 def build_model(params, model_profile):
-    if model_profile["task_type"] == "classification":
-        return XGBClassifier(
-            random_state=model_profile["random_state"],
-            n_jobs=-1,
-            eval_metric="logloss",
-            **params,
-        )
-    return XGBRegressor(
-        random_state=model_profile["random_state"],
-        n_jobs=-1,
-        **params,
-    )
+    mt = _get_model_type(model_profile)
+    is_classif = model_profile["task_type"] == "classification"
+
+    if mt == "xgboost":
+        if is_classif:
+            return XGBClassifier(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
+        return XGBRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
+    if mt == "random_forest":
+        if is_classif:
+            return RandomForestClassifier(random_state=model_profile["random_state"], n_jobs=-1, **params)
+        return RandomForestRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
+    
 
 
 def run_hyperparam_search(X_train_imp, y_train, X_val_imp, y_val, model_profile):

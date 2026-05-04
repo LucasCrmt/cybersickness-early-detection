@@ -17,7 +17,15 @@ from sklearn.metrics import (
 )
 
 
-def evaluate_test_set(final_model, X_test_imp, y_test, model_profile, show_plots=True):
+def evaluate_test_set(
+    final_model,
+    X_test_imp,
+    y_test,
+    model_profile,
+    show_plots=True,
+    target_profile=None,
+    class_order=None,
+):
     pred_test = final_model.predict(X_test_imp)
 
     if model_profile["task_type"] == "classification":
@@ -30,9 +38,24 @@ def evaluate_test_set(final_model, X_test_imp, y_test, model_profile, show_plots
         report = classification_report(y_test, pred_test, zero_division=0)
 
         if show_plots:
-            cm = confusion_matrix(y_test, pred_test)
+            observed_labels = set(y_test) | set(pred_test)
+
+            if class_order is not None:
+                labels = [c for c in class_order if c in observed_labels]
+            else:
+                configured_order = None
+                if target_profile is not None:
+                    configured_order = (target_profile.get("discretize") or {}).get("labels")
+
+                if configured_order is not None:
+                    labels = [c for c in configured_order if c in observed_labels]
+                else:
+                    labels = sorted(observed_labels, key=str)
+
+            cm = confusion_matrix(y_test, pred_test, labels=labels)
             plt.figure(figsize=(8, 6))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                        xticklabels=labels, yticklabels=labels)
             plt.title("Matrice de confusion - Test")
             plt.xlabel("Predit")
             plt.ylabel("Reel")
@@ -116,7 +139,7 @@ def evaluate_robustness(final_model, X_test_imp, y_test, model_profile, eval_pro
     return noise_scores
 
 
-def plot_feature_importance(final_model, feature_cols, top_n=15):
+def plot_feature_importance(final_model, feature_cols, top_n=15, model_profile=None):
     if not hasattr(final_model, "feature_importances_"):
         return None
 
@@ -124,9 +147,12 @@ def plot_feature_importance(final_model, feature_cols, top_n=15):
         "importance", ascending=False
     )
 
+    _mt = (model_profile or {}).get("model_type", "random_forest").lower()
+    _title = "XGBoost" if _mt == "xgboost" else "RandomForest"
+
     plt.figure(figsize=(10, 7))
     sns.barplot(data=imp_df.head(top_n), x="importance", y="feature", orient="h")
-    plt.title("Top features - XGBoost")
+    plt.title(f"Top features - {_title}")
     plt.tight_layout()
     plt.show()
 
