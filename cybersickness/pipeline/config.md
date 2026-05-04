@@ -4,7 +4,7 @@ Copier le bloc Python ci-dessous dans la cellule de profils du notebook.
 
 ```python
 DATA_PROFILE = {
-    "source": "csv",  # csv | mat
+    "source": "csv",  # csv / mat
     "file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMat_2_1.csv",
     "subject_id_col": "Participant",
     "mat_file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMinutes1.mat",
@@ -32,14 +32,6 @@ DATA_PROFILE = {
     "subject_id_count_hint": 42,
 }
 
-REPRESENTATION_PROFILE = {
-    "approach": "A",  # A | B
-    "drop_time_column": True,
-    "aggregated_stats": ["mean", "std", "min", "max", "median", "q25", "q75", "slope"],
-    "window_length": 60,
-    "window_stride": 30,
-}
-
 PREPROCESS_PROFILE = {
     "clip_quantiles": [0.01, 0.99],
     "imputation_strategy": "median",
@@ -50,8 +42,7 @@ PREPROCESS_PROFILE = {
 
 TARGET_PROFILE = {
     "subject_id_col": "Sujet",
-    "source": "xlsx",  # csv | xlsx | column_in_features
-    "csv_path": r"../data/Indicateurs calculés/labels.csv",
+    "source": "xlsx",  # xlsx
     "xlsx_path": r"../data/Questionnaires/FMS1_org.xlsx",
     "sheet_name": "Feuil1",
     "target_col": "target",
@@ -83,8 +74,9 @@ TARGET_PROFILE = {
 }
 
 MODEL_PROFILE = {
-    "task_type": "regression",  # classification | regression
-    "split_method": "random",  # group | random
+    "task_type": "regression",  # classification / regression
+    "model_type": "random_forest",  # random_forest / xgboost
+    "split_method": "random",  # group / random
     "test_size": 0.20,
     "val_size": 0.20,
     "class_weight": "balanced",
