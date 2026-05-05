@@ -91,5 +91,56 @@ EVAL_PROFILE = {
 OUTPUT_PROFILE = {
     "output_dir": r"../data/outputs/random_forest_modulaire",
     "save_model_card": True,
+    "save_visual_report": True,
+    "visual_report_format": "pdf",  # pdf / png / both
+    # Nom du fichier
+    "visual_report_name": "visual_report",
+    # Nb features par graph
+    "max_corr_features": 32,
+    "max_violin_features": 48,
+    "violin_features_per_page": 9,
+    # Texte libre presente sur la page de garde du rapport visuel (optionnel)
+    "hypothesis": (
+        """
+            Hypothèse : ...
+        """
+    ),
 }
+```
+
+## Données indicateurs calculés
+```python
+[
+    "Amp01X",
+    "Amp01Y",
+    "Amp01Z",
+    "Amp04X",
+    "Amp04Y", 
+    "Amp04Z",
+    "TotMovX",
+    "TotMovY",
+    "TotMovZ",
+    "TotMovXYZ",
+    "%Pow01X",
+    "%Pow01Y",
+    "%Pow01Z",
+    "%Pow04X",
+    "%Pow04Y",
+    "%Pow04Z",
+    "Amp01EyeX",
+    "Amp01EyeY",
+    "Amp04EyeX",
+    "Amp04EyeY",
+    "TotMovEyeX",
+    "TotMovEyeY",
+    "%Pow01EyeX",
+    "%Pow01EyeY",
+    "%Pow04EyeX",
+    "%Pow04EyeY",
+    "Ellipse95Eye",
+    "Ellipse95WorldPos",
+    "PupilDiamX",
+    "PupilDiamY",
+    "%Boat",
+]
 ```
