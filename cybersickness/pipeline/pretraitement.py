@@ -7,9 +7,19 @@ from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 
 def apply_target_discretization(df, target_profile):
+    out = df.copy()
+
+    q = target_profile.get("clip_quantiles")
+    if q is not None:
+        q_low, q_high = q
+        target_num = pd.to_numeric(out["target"], errors="coerce")
+        lo = target_num.quantile(q_low)
+        hi = target_num.quantile(q_high)
+        out["target"] = target_num.clip(lo, hi)
+
     disc = target_profile.get("discretize")
     if disc is None:
-        return df
+        return out
 
     bins = disc["bins"]
     labels = disc["labels"]
@@ -20,7 +30,6 @@ def apply_target_discretization(df, target_profile):
             f"Recu: {len(labels)} labels."
         )
 
-    out = df.copy()
     out["target"] = pd.cut(
         pd.to_numeric(out["target"], errors="coerce"),
         bins=bins,
