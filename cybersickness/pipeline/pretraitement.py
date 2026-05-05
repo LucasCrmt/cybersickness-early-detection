@@ -38,8 +38,13 @@ def apply_preprocess(df, preprocess_profile):
     if "n_valid_features" in out.columns:
         out = out[out["n_valid_features"] >= preprocess_profile.get("min_valid_features", 1)].copy()
 
+    # Exclusions de base + exclusions configurees (insensibles a la casse)
+    base_excluded = {"target", "subject_id", "row_id", "window_start", "window_end", "minute"}
+    configured_excluded = set(preprocess_profile.get("exclude_features", []))
+    excluded_norm = {str(c).strip().lower() for c in (base_excluded | configured_excluded)}
+
     feature_cols = [
-        c for c in out.columns if c not in {"target", "subject_id", "row_id", "window_start", "window_end"}
+        c for c in out.columns if str(c).strip().lower() not in excluded_norm
     ]
 
     q = preprocess_profile.get("clip_quantiles")
@@ -56,6 +61,36 @@ def apply_preprocess(df, preprocess_profile):
         drop_cols = nunique[nunique <= 1].index.tolist()
         out = out.drop(columns=drop_cols, errors="ignore")
         feature_cols = [c for c in feature_cols if c not in drop_cols]
+
+    # Inclusion explicite des features: "all" ou liste de noms
+    include_features = preprocess_profile.get("include_features", "all")
+    if isinstance(include_features, str):
+        if include_features.strip().lower() != "all":
+            raise ValueError("preprocess_profile['include_features'] doit etre 'all' ou une liste de noms de features.")
+    elif isinstance(include_features, (list, tuple, set)):
+        available_map = {str(c).strip().lower(): c for c in feature_cols}
+        selected = []
+        missing = []
+        seen = set()
+
+        for raw_name in include_features:
+            key = str(raw_name).strip().lower()
+            if key in available_map:
+                col = available_map[key]
+                if col not in seen:
+                    selected.append(col)
+                    seen.add(col)
+            else:
+                missing.append(raw_name)
+
+        if missing:
+            raise ValueError(
+                "Les features suivantes demandees dans include_features sont introuvables apres pretraitement: "
+                f"{missing}"
+            )
+        feature_cols = selected
+    else:
+        raise ValueError("preprocess_profile['include_features'] doit etre 'all' ou une liste de noms de features.")
 
     return out, feature_cols
 
