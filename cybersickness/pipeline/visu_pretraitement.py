@@ -1,34 +1,46 @@
+import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 
 
-def plot_split_report(dataset_df, train_idx, val_idx, test_idx, model_profile):
-    """
-    Visualise la répartition train/val/test :
-    - nombre de sujets uniques par split
-    - distribution des classes par split (classification) ou histogramme cible (régression)
-    """
-    splits = {"Train": train_idx, "Val": val_idx, "Test": test_idx}
-    is_classif = model_profile["task_type"] == "classification"
+# ---------------------------------------------------------------------------
+# Helpers de dessin partages (utilises par visu_pretraitement et reporting)
+# ---------------------------------------------------------------------------
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+def _draw_corr_heatmap(ax, corr, n_features):
+    annot_size = max(4, min(9, int(120 / n_features)))
+    sns.heatmap(
+        corr, annot=True, fmt=".2f", cmap="coolwarm",
+        center=0, square=True, linewidths=0.3,
+        annot_kws={"size": annot_size}, ax=ax,
+    )
 
-    # --- Sujets par split ---
-    ax = axes[0]
+
+def _draw_violin_page(axes, dataset_df, cols, target_order):
+    for i, col in enumerate(cols):
+        sns.violinplot(
+            data=dataset_df, x="target", y=col, order=target_order,
+            ax=axes[i], inner="box", cut=0, palette="Set2",
+        )
+        axes[i].set_title(col, fontsize=10)
+        axes[i].set_xlabel("")
+    for j in range(len(cols), len(axes)):
+        axes[j].set_visible(False)
+
+
+def _draw_split_report(axes, dataset_df, splits, is_classif):
     subject_counts = {
-        name: dataset_df.iloc[idx]["subject_id"].nunique()
+        name: dataset_df.iloc[idx]["subject_id"].nunique() if "subject_id" in dataset_df.columns else len(idx)
         for name, idx in splits.items()
     }
-    bars = ax.bar(subject_counts.keys(), subject_counts.values(), color=["#4C72B0", "#DD8452", "#55A868"])
-    ax.set_title("Sujets uniques par split")
-    ax.set_ylabel("Nombre de sujets")
+    bars = axes[0].bar(subject_counts.keys(), subject_counts.values(), color=["#4C72B0", "#DD8452", "#55A868"])
+    axes[0].set_title("Sujets uniques par split")
+    axes[0].set_ylabel("Nombre de sujets")
     for bar, v in zip(bars, subject_counts.values()):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2, str(v),
-                ha="center", va="bottom", fontweight="bold")
+        axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2, str(v),
+                     ha="center", va="bottom", fontweight="bold")
 
-    # --- Distribution cible par split ---
-    ax = axes[1]
     dfs = []
     for name, idx in splits.items():
         tmp = dataset_df.iloc[idx][["target"]].copy()
@@ -41,20 +53,57 @@ def plot_split_report(dataset_df, train_idx, val_idx, test_idx, model_profile):
         counts = merged.groupby(["split", "target"], observed=True).size().reset_index(name="n")
         totals = counts.groupby("split")["n"].transform("sum")
         counts["pct"] = counts["n"] / totals * 100
-        sns.barplot(data=counts, x="split", y="pct", hue="target", ax=ax)
-        ax.set_title("Distribution des classes par split (%)")
-        ax.set_ylabel("% d'observations")
-        ax.set_xlabel("")
-        ax.legend(title="Classe")
+        sns.barplot(data=counts, x="split", y="pct", hue="target", ax=axes[1])
+        axes[1].set_title("Distribution des classes par split (%)")
+        axes[1].set_ylabel("% d'observations")
+        axes[1].set_xlabel("")
+        axes[1].legend(title="Classe")
     else:
         for name, color in zip(["Train", "Val", "Test"], ["#4C72B0", "#DD8452", "#55A868"]):
             subset = merged[merged["split"] == name]["target"]
-            ax.hist(subset, bins=15, alpha=0.6, label=name, color=color)
-        ax.set_title("Distribution de la cible par split")
-        ax.set_ylabel("Effectif")
-        ax.set_xlabel("Cible")
-        ax.legend()
+            axes[1].hist(subset, bins=15, alpha=0.6, label=name, color=color)
+        axes[1].set_title("Distribution de la cible par split")
+        axes[1].set_ylabel("Effectif")
+        axes[1].set_xlabel("Cible")
+        axes[1].legend()
 
+
+def _draw_missing_bar(ax, nan_pct):
+    sns.barplot(x=nan_pct.index, y=nan_pct.values, ax=ax)
+    ax.set_title("% de valeurs manquantes par feature")
+    ax.set_xlabel("Feature")
+    ax.set_ylabel("% NaN")
+    ax.tick_params(axis="x", rotation=45)
+
+
+def _draw_clipping_boxplots(axes, raw_df, cols, q_low, q_high):
+    clipped = raw_df[cols].copy()
+    for col in cols:
+        clipped[col] = raw_df[col].clip(
+            lower=raw_df[col].quantile(q_low),
+            upper=raw_df[col].quantile(q_high),
+        )
+    for i, col in enumerate(cols):
+        sns.boxplot(data=[raw_df[col], clipped[col]], ax=axes[i])
+        axes[i].set_title(f"Feature: {col}")
+        axes[i].set_xticklabels(["Avant", "Après"])
+    for j in range(len(cols), len(axes)):
+        axes[j].set_visible(False)
+
+
+# ---------------------------------------------------------------------------
+
+
+def plot_split_report(dataset_df, train_idx, val_idx, test_idx, model_profile):
+    """
+    Visualise la répartition train/val/test :
+    - nombre de sujets uniques par split
+    - distribution des classes par split (classification) ou histogramme cible (régression)
+    """
+    splits = {"Train": train_idx, "Val": val_idx, "Test": test_idx}
+    is_classif = model_profile["task_type"] == "classification"
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    _draw_split_report(axes, dataset_df, splits, is_classif)
     plt.suptitle("Répartition du split", fontsize=13, fontweight="bold")
     plt.tight_layout()
     plt.show()
@@ -79,12 +128,9 @@ def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, 
     if len(cols_corr) >= 2:
         corr = dataset_df[cols_corr].corr()
         size = max(8, len(cols_corr) * 0.55)
-        plt.figure(figsize=(size, size * 0.8))
-        sns.heatmap(
-            corr, annot=len(cols_corr) <= 15, fmt=".2f", cmap="coolwarm",
-            center=0, square=True, linewidths=0.3, annot_kws={"size": 7},
-        )
-        plt.title(f"Matrice de corrélation — top {len(cols_corr)} features (par variance)", fontsize=12)
+        fig, ax = plt.subplots(figsize=(size, size * 0.8))
+        _draw_corr_heatmap(ax, corr, len(cols_corr))
+        ax.set_title(f"Matrice de corrélation — top {len(cols_corr)} features (par variance)", fontsize=12)
         plt.tight_layout()
         plt.show()
 
@@ -99,7 +145,7 @@ def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, 
     n_cols_grid = 2
     n_rows = (len(cols_box) + 1) // n_cols_grid
     fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(14, 4 * n_rows))
-    axes = axes.flatten()
+    axes = np.atleast_1d(axes).flatten()
 
     _configured_order = (target_profile.get("discretize") or {}).get("labels") if target_profile else None
     if _configured_order is not None:
@@ -107,17 +153,8 @@ def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, 
         target_order = [c for c in _configured_order if c in _present]
     else:
         target_order = sorted(dataset_df["target"].dropna().unique(), key=str)
-    for i, col in enumerate(cols_box):
-        sns.violinplot(
-            data=dataset_df, x="target", y=col, order=target_order,
-            ax=axes[i], inner="box", cut=0, palette="Set2",
-        )
-        axes[i].set_title(col, fontsize=10)
-        axes[i].set_xlabel("")
 
-    for j in range(len(cols_box), len(axes)):
-        axes[j].set_visible(False)
-
+    _draw_violin_page(axes, dataset_df, cols_box, target_order)
     plt.suptitle(
         f"Distribution des features par classe — top {len(cols_box)} par variance",
         fontsize=12, fontweight="bold",
@@ -167,12 +204,8 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     nan_pct = raw_df[feature_cols].isna().mean() * 100
     nan_pct = nan_pct[nan_pct > 0].sort_values(ascending=False)
     if not nan_pct.empty:
-        plt.figure(figsize=(max(8, len(nan_pct) * 0.5), 4))
-        sns.barplot(x=nan_pct.index, y=nan_pct.values)
-        plt.title("% de valeurs manquantes par feature")
-        plt.xlabel("Feature")
-        plt.ylabel("% NaN")
-        plt.xticks(rotation=45, ha="right")
+        fig, ax = plt.subplots(figsize=(max(8, len(nan_pct) * 0.5), 4))
+        _draw_missing_bar(ax, nan_pct)
         plt.tight_layout()
         plt.show()
     else:
@@ -196,23 +229,11 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
         return
 
     q_low, q_high = clip_quantiles
-    clipped_df = raw_df.copy()
-    for col in feature_cols:
-        clipped_df[col] = clipped_df[col].clip(
-            lower=clipped_df[col].quantile(q_low),
-            upper=clipped_df[col].quantile(q_high),
-        )
-
     boxplot_features = feature_cols[:6]
     n_cols = 3
     n_rows = (len(boxplot_features) + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
-    axes = axes.flatten()
-    for i, col in enumerate(boxplot_features):
-        sns.boxplot(data=[raw_df[col], clipped_df[col]], ax=axes[i])
-        axes[i].set_title(f"Feature: {col}")
-        axes[i].set_xticklabels(["Avant", "Après"])
-    for j in range(len(boxplot_features), len(axes)):
-        axes[j].set_visible(False)
+    axes = np.atleast_1d(axes).flatten()
+    _draw_clipping_boxplots(axes, raw_df, boxplot_features, q_low, q_high)
     plt.tight_layout()
     plt.show()

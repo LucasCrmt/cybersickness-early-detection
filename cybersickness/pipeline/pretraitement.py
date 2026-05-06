@@ -41,6 +41,28 @@ def apply_target_discretization(df, target_profile):
     return out
 
 
+def drop_rows_all_nan_on_columns(df, columns):
+    """
+    Supprime les lignes dont toutes les colonnes fournies sont manquantes
+    (NaN/None ou chaine vide, y compris les espaces).
+
+    Parametres :
+    df                  : dataframe a nettoyer
+    columns             : colonnes a verifier
+    """
+    out = df.copy()
+    checked_cols = [c for c in columns if c in out.columns]
+
+    if len(checked_cols) == 0:
+        return out
+
+    subset = out[checked_cols]
+    empty_like_mask = subset.apply(lambda col: col.fillna("").astype(str).str.strip().eq(""))
+    missing_like_mask = subset.isna() | empty_like_mask
+    combined_mask = missing_like_mask.all(axis=1)
+    return out.loc[~combined_mask].copy()
+
+
 def apply_preprocess(df, preprocess_profile):
     out = df.copy()
 
@@ -100,6 +122,9 @@ def apply_preprocess(df, preprocess_profile):
         feature_cols = selected
     else:
         raise ValueError("preprocess_profile['include_features'] doit etre 'all' ou une liste de noms de features.")
+
+    # Nettoyage implicite: supprime les lignes dont toutes les included_features sont vides.
+    out = drop_rows_all_nan_on_columns(out, feature_cols)
 
     return out, feature_cols
 

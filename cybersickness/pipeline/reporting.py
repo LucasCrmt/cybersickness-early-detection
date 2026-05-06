@@ -10,6 +10,14 @@ import pandas as pd
 import seaborn as sns
 from matplotlib.backends.backend_pdf import PdfPages
 
+from pipeline.visu_pretraitement import (
+    _draw_clipping_boxplots,
+    _draw_corr_heatmap,
+    _draw_missing_bar,
+    _draw_split_report,
+    _draw_violin_page,
+)
+
 
 def build_model_card(
     dataset_df,
@@ -185,41 +193,8 @@ def visual_split_report(context, save_figure):
     task_type = model_profile.get("task_type", "unknown")
     splits = {"Train": train_idx, "Val": val_idx, "Test": test_idx}
     is_classif = task_type == "classification"
-
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    subject_counts = {
-        name: dataset_df.iloc[idx]["subject_id"].nunique() if "subject_id" in dataset_df.columns else len(idx)
-        for name, idx in splits.items()
-    }
-    bars = axes[0].bar(subject_counts.keys(), subject_counts.values(), color=["#4C72B0", "#DD8452", "#55A868"])
-    axes[0].set_title("Sujets uniques par split")
-    axes[0].set_ylabel("Nombre")
-    for bar, value in zip(bars, subject_counts.values()):
-        axes[0].text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.2, str(value), ha="center", va="bottom")
-
-    dfs = []
-    for name, idx in splits.items():
-        tmp = dataset_df.iloc[idx][["target"]].copy()
-        tmp["split"] = name
-        dfs.append(tmp)
-    merged = pd.concat(dfs, ignore_index=True)
-    merged["split"] = pd.Categorical(merged["split"], categories=["Train", "Val", "Test"], ordered=True)
-
-    if is_classif:
-        counts = merged.groupby(["split", "target"], observed=True).size().reset_index(name="n")
-        totals = counts.groupby("split")["n"].transform("sum")
-        counts["pct"] = counts["n"] / totals * 100
-        sns.barplot(data=counts, x="split", y="pct", hue="target", ax=axes[1])
-        axes[1].set_title("Distribution des classes par split (%)")
-        axes[1].set_ylabel("%")
-    else:
-        for name, color in zip(["Train", "Val", "Test"], ["#4C72B0", "#DD8452", "#55A868"]):
-            subset = merged[merged["split"] == name]["target"]
-            axes[1].hist(subset, bins=15, alpha=0.6, label=name, color=color)
-        axes[1].legend()
-        axes[1].set_title("Distribution de la cible par split")
-
+    _draw_split_report(axes, dataset_df, splits, is_classif)
     fig.suptitle("Repartition du split", fontsize=13, fontweight="bold")
     fig.tight_layout()
     save_figure(fig, "split_report")
@@ -241,17 +216,7 @@ def visual_correlation_pages(context, save_figure):
         corr = dataset_df[chunk].corr()
         size = max(8, len(chunk) * 0.52)
         fig, ax = plt.subplots(figsize=(size, size * 0.8))
-        sns.heatmap(
-            corr,
-            annot=len(chunk) <= 15,
-            fmt=".2f",
-            cmap="coolwarm",
-            center=0,
-            square=True,
-            linewidths=0.25,
-            annot_kws={"size": 7},
-            ax=ax,
-        )
+        _draw_corr_heatmap(ax, corr, len(chunk))
         ax.set_title(f"Correlation (page {i + 1}/{n_corr_pages}) - {len(chunk)} features")
         fig.tight_layout()
         save_figure(fig, f"corr_page_{i + 1}")
@@ -283,20 +248,7 @@ def visual_violin_pages(context, save_figure):
         n_rows = math.ceil(len(chunk) / n_cols_grid)
         fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(14, 4 * n_rows))
         axes = np.atleast_1d(axes).flatten()
-
-        for j, col in enumerate(chunk):
-            sns.violinplot(
-                data=dataset_df,
-                x="target",
-                y=col,
-                order=target_order,
-                ax=axes[j],
-                inner="box",
-                cut=0,
-                palette="Set2",
-            )
-            axes[j].set_title(col, fontsize=10)
-            axes[j].set_xlabel("")
+        _draw_violin_page(axes, dataset_df, chunk, target_order)
 
         for j in range(len(chunk), len(axes)):
             axes[j].set_visible(False)
@@ -323,11 +275,7 @@ def visual_missing_values_bar(context, save_figure):
 
     top_nan = nan_pct.head(40)
     fig, ax = plt.subplots(figsize=(max(10, len(top_nan) * 0.25), 4.5))
-    sns.barplot(x=top_nan.index, y=top_nan.values, ax=ax)
-    ax.set_title("Top features avec valeurs manquantes (%)")
-    ax.set_xlabel("Feature")
-    ax.set_ylabel("% NaN")
-    ax.tick_params(axis="x", rotation=45)
+    _draw_missing_bar(ax, top_nan)
     fig.tight_layout()
     save_figure(fig, "missing_values_bar")
 
@@ -344,23 +292,11 @@ def visual_clipping_boxplots(context, save_figure):
     if not clip_cols:
         return
 
-    clipped_df = raw_df.copy()
-    for col in clip_cols:
-        clipped_df[col] = clipped_df[col].clip(
-            lower=clipped_df[col].quantile(q_low),
-            upper=clipped_df[col].quantile(q_high),
-        )
-
     n_cols_grid = 3
     n_rows = math.ceil(len(clip_cols) / n_cols_grid)
     fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(15, 5 * n_rows))
     axes = np.atleast_1d(axes).flatten()
-    for i, col in enumerate(clip_cols):
-        sns.boxplot(data=[raw_df[col], clipped_df[col]], ax=axes[i])
-        axes[i].set_title(f"Feature: {col}")
-        axes[i].set_xticklabels(["Avant", "Apres"])
-    for i in range(len(clip_cols), len(axes)):
-        axes[i].set_visible(False)
+    _draw_clipping_boxplots(axes, raw_df, clip_cols, q_low, q_high)
     fig.suptitle("Impact du clipping (echantillon de features)", fontsize=12, fontweight="bold")
     fig.tight_layout()
     save_figure(fig, "clipping_boxplots")
