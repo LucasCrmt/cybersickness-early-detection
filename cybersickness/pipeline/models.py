@@ -6,9 +6,10 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_score
 from sklearn.model_selection import ParameterGrid
+from sklearn.svm import SVC, SVR
 from xgboost import XGBClassifier, XGBRegressor
 
-_VALID_MODEL_TYPES = {"random_forest", "xgboost"}
+_VALID_MODEL_TYPES = {"random_forest", "xgboost", "svm"}
 
 
 def _get_model_type(model_profile):
@@ -28,6 +29,13 @@ def get_search_space(task_type, model_profile=None):
             "learning_rate": [0.05, 0.1],
             "subsample": [0.8, 1.0],
             "colsample_bytree": [0.8, 1.0],
+        }
+
+    if mt == "svm":
+        return {
+            "C": [0.1, 1, 10, 100],
+            "kernel": ["rbf", "linear"],
+            "gamma": ["scale", "auto"],
         }
 
     # random_forest
@@ -56,7 +64,13 @@ def build_model(params, model_profile):
         if is_classif:
             return RandomForestClassifier(random_state=model_profile["random_state"], n_jobs=-1, **params)
         return RandomForestRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
-    
+
+    if mt == "svm":
+        class_weight = model_profile.get("class_weight", None) if is_classif else None
+        if is_classif:
+            return SVC(class_weight=class_weight, **params)
+        return SVR(**params)
+
 
 
 def run_hyperparam_search(X_train_imp, y_train, X_val_imp, y_val, model_profile):
