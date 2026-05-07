@@ -80,14 +80,61 @@ def _get_target_order(dataset_df, target_profile):
     return sorted(dataset_df["target"].dropna().unique(), key=str)
 
 
+def _humanize_target_mode(target_profile):
+    mapping = {
+        "fixed_minute": "Minute fixe",
+        "mean_all_minutes": "Moyenne sur toutes les minutes",
+        "mean_range": "Moyenne sur un intervalle de minutes",
+        "last_minute": "Derniere minute de l'expérience",
+        "per_minute": "Indicateur malaise par minute",
+    }
+    if not target_profile:
+        return "Non precise"
+    target_mode = target_profile.get("target_mode")
+    if target_mode is None:
+        return "Non precise"
+    key = str(target_mode).strip().lower()
+    return mapping.get(key, str(target_mode).replace("_", " "))
+
+
+def _format_class_ranges(target_profile):
+    if not target_profile:
+        return None
+    discretize = target_profile.get("discretize")
+    if not discretize:
+        return None
+
+    bins = discretize.get("bins")
+    labels = discretize.get("labels")
+    if not bins or not labels or len(bins) != len(labels) + 1:
+        return None
+
+    ranges = []
+    for i, label in enumerate(labels):
+        lo = bins[i]
+        hi = bins[i + 1]
+        left_bracket = "[" if i == 0 else "("
+        ranges.append(f"{label}: {left_bracket}{lo}, {hi}]")
+    return " | ".join(ranges)
+
+
 def visual_cover_page(context, save_figure):
     dataset_df = context["dataset_df"]
     feature_cols = context["feature_cols"]
     model_profile = context["model_profile"]
     output_profile = context["output_profile"]
+    data_profile = context.get("data_profile")
+    target_profile = context.get("target_profile")
 
     task_type = model_profile.get("task_type", "unknown")
     hypothesis = output_profile.get("hypothesis")
+    dataset_path = None
+    if data_profile is not None:
+        dataset_path = data_profile.get("file_path") or data_profile.get("mat_file_path")
+    source_file = os.path.basename(str(dataset_path)) if dataset_path else "n/a"
+    target_mode = _humanize_target_mode(target_profile if target_profile else None)
+    class_ranges = _format_class_ranges(target_profile) if task_type == "classification" else None
+
     fig, ax = plt.subplots(figsize=(11.7, 8.3))
     ax.axis("off")
 
@@ -101,22 +148,12 @@ def visual_cover_page(context, save_figure):
         fontweight="bold",
         transform=ax.transAxes,
     )
-    ax.text(
-        0.5,
-        0.90,
-        datetime.now().strftime("%d/%m/%Y %H:%M"),
-        va="top",
-        ha="center",
-        fontsize=11,
-        color="#555555",
-        transform=ax.transAxes,
-    )
 
     if hypothesis:
         ax.text(
             0.03,
             0.82,
-            "Hypothese / Postulat",
+            "Hypothèse",
             va="top",
             ha="left",
             fontsize=13,
@@ -141,21 +178,21 @@ def visual_cover_page(context, save_figure):
     summary_rows = [
         ["Modele", str(model_profile.get("model_type", "n/a"))],
         ["Tache", str(task_type)],
+        ["Fichier source", source_file],
+        ["Mode cible", target_mode],
         ["Split method", str(model_profile.get("split_method", "n/a"))],
         ["Test size", str(model_profile.get("test_size", "n/a"))],
         ["Val size", str(model_profile.get("val_size", "n/a"))],
-        ["Seed", str(model_profile.get("random_state", "n/a"))],
         ["N samples", str(int(len(dataset_df)))],
         [
             "N subjects",
             str(int(dataset_df["subject_id"].nunique()) if "subject_id" in dataset_df.columns else "n/a"),
         ],
         ["N features", str(int(len(feature_cols)))],
-        ["Top corr/page", str(output_profile.get("max_corr_features", 24))],
-        ["Violin total", str(output_profile.get("max_violin_features", 48))],
-        ["Violin/page", str(output_profile.get("violin_features_per_page", 6))],
-        ["Format export", str(output_profile.get("visual_report_format", "pdf"))],
     ]
+
+    if class_ranges is not None:
+        summary_rows.append(["Plages de classes", class_ranges])
 
     table_bottom = 0.08
     table_height = max(0.30, info_y - table_bottom - 0.03)
@@ -302,6 +339,118 @@ def visual_clipping_boxplots(context, save_figure):
     save_figure(fig, "clipping_boxplots")
 
 
+def visual_confusion_matrix(context, save_figure):
+    from sklearn.metrics import confusion_matrix as sk_confusion_matrix
+
+    pred_test = context.get("pred_test")
+    y_test = context.get("y_test")
+    model_profile = context["model_profile"]
+    target_profile = context.get("target_profile")
+
+    if model_profile.get("task_type") != "classification" or pred_test is None or y_test is None:
+        return
+
+    observed = set(y_test) | set(pred_test)
+    configured_order = (target_profile.get("discretize") or {}).get("labels") if target_profile else None
+    labels = [c for c in configured_order if c in observed] if configured_order else sorted(observed, key=str)
+
+    cm = sk_confusion_matrix(y_test, pred_test, labels=labels)
+    size = max(5, len(labels) * 1.5)
+    fig, ax = plt.subplots(figsize=(size, size * 0.85))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels, ax=ax)
+    ax.set_title("Matrice de confusion - ensemble test")
+    ax.set_xlabel("Predit")
+    ax.set_ylabel("Reel")
+    fig.tight_layout()
+    save_figure(fig, "confusion_matrix")
+
+
+def visual_metrics_bar(context, save_figure):
+    metrics = context.get("metrics")
+    model_profile = context["model_profile"]
+
+    if not metrics:
+        return
+
+    metric_items = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    if not metric_items:
+        return
+
+    names = list(metric_items.keys())
+    values = list(metric_items.values())
+
+    fig, ax = plt.subplots(figsize=(max(6, len(names) * 1.4), 4))
+    bars = ax.bar(names, values, color="#4C72B0")
+    top = max(values) if values else 1
+    ax.set_ylim(0, top * 1.18)
+    ax.set_title("Metriques de performance — ensemble test")
+    ax.set_ylabel("Score")
+    for bar, v in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + top * 0.01,
+                f"{v:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.tick_params(axis="x", rotation=25)
+    fig.tight_layout()
+    save_figure(fig, "metrics_bar")
+
+
+def visual_feature_importance(context, save_figure):
+    final_model = context.get("final_model")
+    feature_cols = context["feature_cols"]
+    model_profile = context["model_profile"]
+    top_n = context["output_profile"].get("top_n_importance", 20)
+
+    if final_model is None or not hasattr(final_model, "feature_importances_"):
+        return
+
+    imp_df = (
+        pd.DataFrame({"feature": feature_cols, "importance": final_model.feature_importances_})
+        .sort_values("importance", ascending=False)
+        .head(top_n)
+    )
+    _mt = model_profile.get("model_type", "random_forest").lower()
+    title = "XGBoost" if _mt == "xgboost" else "RandomForest"
+
+    fig, ax = plt.subplots(figsize=(10, max(5, len(imp_df) * 0.38)))
+    sns.barplot(data=imp_df, x="importance", y="feature", orient="h", ax=ax)
+    ax.set_title(f"Importance des features - top {len(imp_df)} ({title})")
+    ax.set_xlabel("Importance")
+    ax.set_ylabel("")
+    fig.tight_layout()
+    save_figure(fig, "feature_importance")
+
+
+def visual_pca(context, save_figure):
+    from sklearn.decomposition import PCA
+
+    X_test_imp = context.get("X_test_imp")
+    y_test = context.get("y_test")
+    model_profile = context["model_profile"]
+    target_profile = context.get("target_profile")
+
+    if model_profile.get("task_type") != "classification" or X_test_imp is None or y_test is None:
+        return
+    if X_test_imp.shape[1] < 2:
+        return
+
+    pca = PCA(n_components=2, random_state=model_profile.get("random_state", 42))
+    X_2d = pca.fit_transform(X_test_imp)
+    var_ratio = pca.explained_variance_ratio_
+
+    configured_order = (target_profile.get("discretize") or {}).get("labels") if target_profile else None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.scatterplot(
+        x=X_2d[:, 0], y=X_2d[:, 1], hue=y_test,
+        hue_order=configured_order, palette="tab10", s=40, ax=ax,
+    )
+    ax.set_title("Projection PCA — ensemble test")
+    ax.set_xlabel(f"PC1 ({var_ratio[0]:.1%} variance expliquee)")
+    ax.set_ylabel(f"PC2 ({var_ratio[1]:.1%} variance expliquee)")
+    ax.legend(title="Classe")
+    fig.tight_layout()
+    save_figure(fig, "pca_projection")
+
+
 VISUAL_REPORT_FUNCTIONS = {
     "visual_cover_page": visual_cover_page,
     "visual_split_report": visual_split_report,
@@ -309,6 +458,10 @@ VISUAL_REPORT_FUNCTIONS = {
     "visual_violin_pages": visual_violin_pages,
     "visual_missing_values_bar": visual_missing_values_bar,
     "visual_clipping_boxplots": visual_clipping_boxplots,
+    "visual_confusion_matrix": visual_confusion_matrix,
+    "visual_metrics_bar": visual_metrics_bar,
+    "visual_feature_importance": visual_feature_importance,
+    "visual_pca": visual_pca,
 }
 
 
@@ -346,8 +499,14 @@ def export_visual_report(
     val_idx=None,
     test_idx=None,
     target_profile=None,
+    data_profile=None,
     raw_df=None,
     preprocess_profile=None,
+    final_model=None,
+    pred_test=None,
+    y_test=None,
+    metrics=None,
+    X_test_imp=None,
 ):
     """
     Exporte un rapport visuel modulaire compose de visualisations selectionnables.
@@ -361,12 +520,19 @@ def export_visual_report(
     val_idx                   : indices validation (optionnel)
     test_idx                  : indices test (optionnel)
     target_profile            : configuration cible pour l'ordre des classes (optionnel)
+    data_profile              : configuration des donnees (pour afficher le nom de fichier source) (optionnel)
     raw_df                    : dataframe avant pretraitement pour les pages NaN (optionnel)
     preprocess_profile        : configuration pretraitement pour afficher le clipping (optionnel)
+    final_model               : modele entraine (pour importance des features) (optionnel)
+    pred_test                 : predictions sur le test set (pour matrice de confusion) (optionnel)
+    y_test                    : vraies etiquettes test (optionnel)
+    metrics                   : dict de metriques (pour visual_metrics_bar) (optionnel)
+    X_test_imp                : features test imputed/scaled (pour PCA) (optionnel)
 
     output_profile optionnel :
     visual_report_functions   : "all" ou liste de noms de fonctions de visualisation
                                 ex: ["visual_cover_page", "visual_correlation_pages"]
+    top_n_importance          : nombre de features a afficher dans l'importance (defaut 20)
     """
     out_dir = output_profile["output_dir"]
     report_format = output_profile.get("visual_report_format", "pdf")
@@ -412,9 +578,15 @@ def export_visual_report(
         "val_idx": val_idx,
         "test_idx": test_idx,
         "target_profile": target_profile,
+        "data_profile": data_profile,
         "raw_df": raw_df,
         "preprocess_profile": preprocess_profile,
         "ranked_num_cols": ranked_num_cols,
+        "final_model": final_model,
+        "pred_test": pred_test,
+        "y_test": y_test,
+        "metrics": metrics,
+        "X_test_imp": X_test_imp,
     }
 
     try:
