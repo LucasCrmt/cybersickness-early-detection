@@ -1,4 +1,4 @@
-from copy import deepcopy
+﻿from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -8,7 +8,18 @@ from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_sco
 from sklearn.model_selection import ParameterGrid
 from xgboost import XGBClassifier, XGBRegressor
 
-_VALID_MODEL_TYPES = {"random_forest", "xgboost"}
+try:
+    from tensorflow.keras.models import Sequential, Model
+    from tensorflow.keras.layers import (
+        Conv1D, Dense, Dropout, LSTM, Bidirectional, Input, Flatten, 
+        concatenate, Activation, BatchNormalization, GlobalAveragePooling1D
+    )
+    from tensorflow.keras.optimizers import Adam
+    TF_AVAILABLE = True
+except ImportError:
+    TF_AVAILABLE = False
+
+_VALID_MODEL_TYPES = {"random_forest", "xgboost", "cnn_1d", "inception_time", "bilstm", "cnn_lstm"}
 
 
 def _get_model_type(model_profile):
@@ -30,18 +41,204 @@ def get_search_space(task_type, model_profile=None):
             "colsample_bytree": [0.8, 1.0],
         }
 
-    # random_forest
-    common = {
+    if mt == "random_forest":
+        common = {
+            "n_estimators": [200, 500],
+            "max_depth": [None, 10, 20],
+            "min_samples_split": [2, 5],
+            "min_samples_leaf": [1, 2],
+            "max_features": ["sqrt", "log2"],
+        }
+        if task_type == "classification":
+            class_weight = "balanced" if model_profile is None else model_profile.get("class_weight", "balanced")
+            common["class_weight"] = [class_weight]
+        return common
+
+    # Modèles approche B - séries temporelles
+    if mt == "cnn_1d":
+        return {
+            "filters": [32, 64],
+            "kernel_size": [3, 5],
+            "dropout_rate": [0.2, 0.4],
+            "learning_rate": [0.001, 0.01],
+            "batch_size": [16, 32],
+        }
+    
+    if mt == "inception_time":
+        return {
+            "filters": [32, 64],
+            "depth": [2, 3],
+            "dropout_rate": [0.2, 0.3],
+            "learning_rate": [0.001, 0.005],
+            "batch_size": [16, 32],
+        }
+    
+    if mt == "bilstm":
+        return {
+            "units": [32, 64],
+            "dropout_rate": [0.2, 0.3],
+            "learning_rate": [0.001, 0.01],
+            "batch_size": [16, 32],
+        }
+    
+    if mt == "cnn_lstm":
+        return {
+            "cnn_filters": [32, 64],
+            "cnn_kernel": [3, 5],
+            "lstm_units": [32, 64],
+            "dropout_rate": [0.2, 0.3],
+            "learning_rate": [0.001, 0.01],
+            "batch_size": [16, 32],
+        }
+    
+    # Par défaut, random_forest
+    return {
         "n_estimators": [200, 500],
         "max_depth": [None, 10, 20],
         "min_samples_split": [2, 5],
         "min_samples_leaf": [1, 2],
         "max_features": ["sqrt", "log2"],
     }
-    if task_type == "classification":
-        class_weight = "balanced" if model_profile is None else model_profile.get("class_weight", "balanced")
-        common["class_weight"] = [class_weight]
-    return common
+
+
+def _build_cnn_1d(input_shape, output_shape, is_classif, params):
+    """Construit un modèle CNN 1D pour les séries temporelles."""
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN 1D.")
+    
+    filters = params.get("filters", 32)
+    kernel_size = params.get("kernel_size", 3)
+    dropout_rate = params.get("dropout_rate", 0.2)
+    
+    model = Sequential([
+        Conv1D(filters, kernel_size, activation='relu', input_shape=input_shape),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Conv1D(filters * 2, kernel_size, activation='relu'),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        GlobalAveragePooling1D(),
+        Dense(64, activation='relu'),
+        Dropout(dropout_rate),
+        Dense(output_shape, activation='softmax' if is_classif else 'linear')
+    ])
+    return model
+
+
+def _build_inception_time(input_shape, output_shape, is_classif, params):
+    """Construit un modèle InceptionTime pour les séries temporelles."""
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser InceptionTime.")
+    
+    filters = params.get("filters", 32)
+    depth = params.get("depth", 2)
+    dropout_rate = params.get("dropout_rate", 0.2)
+    
+    input_tensor = Input(shape=input_shape)
+    x = input_tensor
+    
+    # Empile plusieurs blocs InceptionTime
+    for _ in range(depth):
+        # Branche 1 : Conv 1x1
+        b1 = Conv1D(filters, 1, padding='same', activation='relu')(x)
+        
+        # Branche 2 : Conv 3x3
+        b2 = Conv1D(filters, 3, padding='same', activation='relu')(x)
+        
+        # Branche 3 : Conv 5x5
+        b3 = Conv1D(filters, 5, padding='same', activation='relu')(x)
+        
+        # Concaténation et normalisation
+        x = concatenate([b1, b2, b3])
+        x = BatchNormalization()(x)
+        x = Dropout(dropout_rate)(x)
+    
+    x = GlobalAveragePooling1D()(x)
+    x = Dense(64, activation='relu')(x)
+    x = Dropout(dropout_rate)(x)
+    output = Dense(output_shape, activation='softmax' if is_classif else 'linear')(x)
+    
+    model = Model(inputs=input_tensor, outputs=output)
+    return model
+
+
+def _build_bilstm(input_shape, output_shape, is_classif, params):
+    """Construit un modèle BiLSTM pour les séries temporelles."""
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser BiLSTM.")
+    
+    units = params.get("units", 32)
+    dropout_rate = params.get("dropout_rate", 0.2)
+    
+    model = Sequential([
+        Bidirectional(LSTM(units, return_sequences=True, dropout=dropout_rate), input_shape=input_shape),
+        Bidirectional(LSTM(units, dropout=dropout_rate)),
+        Dense(64, activation='relu'),
+        Dropout(dropout_rate),
+        Dense(output_shape, activation='softmax' if is_classif else 'linear')
+    ])
+    return model
+
+
+def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
+    """Construit un modèle CNN-LSTM hybride pour les séries temporelles."""
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN-LSTM.")
+    
+    cnn_filters = params.get("cnn_filters", 32)
+    cnn_kernel = params.get("cnn_kernel", 3)
+    lstm_units = params.get("lstm_units", 32)
+    dropout_rate = params.get("dropout_rate", 0.2)
+    
+    model = Sequential([
+        Conv1D(cnn_filters, cnn_kernel, activation='relu', input_shape=input_shape),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        Conv1D(cnn_filters * 2, cnn_kernel, activation='relu'),
+        BatchNormalization(),
+        Dropout(dropout_rate),
+        LSTM(lstm_units, return_sequences=False, dropout=dropout_rate),
+        Dense(64, activation='relu'),
+        Dropout(dropout_rate),
+        Dense(output_shape, activation='softmax' if is_classif else 'linear')
+    ])
+    return model
+
+
+class KerasSklearnWrapper:
+    """Wrapper pour rendre les modèles Keras compatibles avec l'interface sklearn."""
+    
+    def __init__(self, model_builder, input_shape, output_shape, is_classif, params, epochs=50, verbose=0):
+        self.model_builder = model_builder
+        self.input_shape = input_shape
+        self.output_shape = output_shape
+        self.is_classif = is_classif
+        self.params = params
+        self.epochs = epochs
+        self.verbose = verbose
+        self.model = None
+        self.learning_rate = params.get("learning_rate", 0.001)
+        self.batch_size = params.get("batch_size", 32)
+    
+    def fit(self, X, y):
+        """Entraîne le modèle."""
+        from tensorflow.keras.optimizers import Adam
+        
+        self.model = self.model_builder(self.input_shape, self.output_shape, self.is_classif, self.params)
+        self.model.compile(
+            optimizer=Adam(learning_rate=self.learning_rate),
+            loss='sparse_categorical_crossentropy' if self.is_classif else 'mse',
+            metrics=['accuracy' if self.is_classif else 'mse']
+        )
+        self.model.fit(X, y, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
+        return self
+    
+    def predict(self, X):
+        """Prédit sur les données."""
+        predictions = self.model.predict(X, verbose=0)
+        if self.is_classif:
+            return np.argmax(predictions, axis=1)
+        return predictions.flatten()
 
 
 def build_model(params, model_profile):
@@ -52,10 +249,51 @@ def build_model(params, model_profile):
         if is_classif:
             return XGBClassifier(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
         return XGBRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
+    
     if mt == "random_forest":
         if is_classif:
             return RandomForestClassifier(random_state=model_profile["random_state"], n_jobs=-1, **params)
         return RandomForestRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
+    
+    # Modèles d'approche B - séries temporelles
+    # Note: input_shape et output_shape seront définis à l'appel selon les données
+    if mt == "cnn_1d":
+        return KerasSklearnWrapper(
+            _build_cnn_1d,
+            input_shape=(params.get("sequence_length", 100), params.get("n_features", 1)),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params=params
+        )
+    
+    if mt == "inception_time":
+        return KerasSklearnWrapper(
+            _build_inception_time,
+            input_shape=(params.get("sequence_length", 100), params.get("n_features", 1)),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params=params
+        )
+    
+    if mt == "bilstm":
+        return KerasSklearnWrapper(
+            _build_bilstm,
+            input_shape=(params.get("sequence_length", 100), params.get("n_features", 1)),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params=params
+        )
+    
+    if mt == "cnn_lstm":
+        return KerasSklearnWrapper(
+            _build_cnn_lstm,
+            input_shape=(params.get("sequence_length", 100), params.get("n_features", 1)),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params=params
+        )
+    
+    raise ValueError(f"Type de modèle non reconnu: {mt}")
     
 
 
