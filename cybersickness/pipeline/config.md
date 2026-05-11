@@ -7,29 +7,6 @@ DATA_PROFILE = {
     "source": "csv",  # csv / mat
     "file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMat_2_1.csv",
     "subject_id_col": "Participant",
-    "mat_file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMinutes1.mat",
-    "mat_variable": "FullTimeIndicatorsMat",
-    "feature_columns": {
-        0: "Time",
-        1: "HMDPosX",
-        2: "HMDPosY",
-        3: "HMDPosZ",
-        4: "RotX",
-        5: "RotY",
-        6: "RotZ",
-        7: "SuggestedRotationX",
-        8: "SuggestedRotationY",
-        9: "SuggestedRotationZ",
-        10: "LeftPupilDiameter",
-        11: "RightPupilDiameter",
-        12: "XGazeDirection",
-        13: "YGazeDirection",
-        14: "Confidence",
-        15: "IsBoat",
-        16: "XWorldPosition",
-        17: "YWorldPosition",
-    },
-    "subject_id_count_hint": 42,
 }
 
 PREPROCESS_PROFILE = {
@@ -75,7 +52,7 @@ TARGET_PROFILE = {
 
 MODEL_PROFILE = {
     "task_type": "regression",  # classification / regression
-    "model_type": "random_forest",  # random_forest / xgboost
+    "model_type": "random_forest",  # random_forest / xgboost / SVM
     "split_method": "random",  # group / random
     "test_size": 0.20,
     "val_size": 0.20,
@@ -93,12 +70,25 @@ OUTPUT_PROFILE = {
     "save_model_card": True,
     "save_visual_report": True,
     "visual_report_format": "pdf",  # pdf / png / both
+    # "all" pour tout, ou une liste explicite de fonctions
+    "visual_report_functions": [
+        "visual_cover_page",
+        "visual_split_report",
+        "visual_correlation_pages",
+        "visual_violin_pages",
+        "visual_clipping_boxplots",
+        "visual_confusion_matrix", # classification uniquement
+        "visual_metrics_bar",
+        "visual_feature_importance",
+        "visual_pca", # classification uniquement
+    ],
     # Nom du fichier
     "visual_report_name": "visual_report",
     # Nb features par graph
     "max_corr_features": 32,
     "max_violin_features": 48,
     "violin_features_per_page": 9,
+    "top_n_importance": 20, # nombre de features dans le graphe d'importance
     # Texte libre presente sur la page de garde du rapport visuel (optionnel)
     "hypothesis": (
         """
