@@ -61,16 +61,19 @@ def load_mat_matrix(data_profile):
 # CSV features
 
 def load_csv_features(data_profile):
-    """Charge un CSV de features en utilisant uniquement les colonnes declarees dans data_profile.
+    """Charge un CSV de features.
 
     Parametres :
-    data_profile: dict de configuration, avec cles obligatoires
-        - 'file_path'      : chemin du CSV
-        - 'subject_id_col' : nom exact de la colonne identifiant sujet dans le CSV brut
-        - 'time_col'       : nom exact de la colonne temporelle dans le CSV brut
+    data_profile: dict de configuration avec :
+        - 'file_path'      : chemin du CSV (obligatoire)
+        - 'subject_id_col' : nom de la colonne sujet dans le CSV (obligatoire)
+        - 'time_col'       : nom de la colonne de temps en secondes (approche B uniquement,
+                             optionnel). Si presente, elle est renommee 'time' et une colonne
+                             'minute' est derivee via floor(time / 60).
 
     Retour :
-    DataFrame harmonise avec les colonnes standard 'subject_id' et 'time'.
+    DataFrame avec au moins les colonnes 'subject_id' et 'row_id'.
+    Approche B : colonnes supplementaires 'time' et 'minute'.
     """
     csv_path = data_profile["file_path"]
     if not os.path.exists(csv_path):
@@ -80,8 +83,6 @@ def load_csv_features(data_profile):
 
     if "subject_id_col" not in data_profile:
         raise ValueError("data_profile doit definir explicitement 'subject_id_col'.")
-    if "time_col" not in data_profile:
-        raise ValueError("data_profile doit definir explicitement 'time_col'.")
 
     sid_col = data_profile["subject_id_col"]
     if sid_col not in df.columns:
@@ -96,20 +97,21 @@ def load_csv_features(data_profile):
     if "row_id" not in df.columns:
         df["row_id"] = np.arange(len(df), dtype=int)
 
-    time_col = data_profile["time_col"]
-    if time_col not in df.columns:
-        raise ValueError(
-            f"Colonne temporelle introuvable: '{time_col}'. Colonnes disponibles: {list(df.columns)}"
-        )
-    if time_col != "time":
-        df = df.rename(columns={time_col: "time"})
-    df["time"] = pd.to_numeric(df["time"], errors="coerce")
-    df = df.dropna(subset=["time"]).copy()
-    df["time"] = df["time"].astype(float)
+    # Approche B : colonne de temps en secondes → 'time' + 'minute' derivee
+    time_col = data_profile.get("time_col")
+    if time_col is not None:
+        if time_col not in df.columns:
+            raise ValueError(
+                f"Colonne temporelle introuvable: '{time_col}'. Colonnes disponibles: {list(df.columns)}"
+            )
+        if time_col != "time":
+            df = df.rename(columns={time_col: "time"})
+        df["time"] = pd.to_numeric(df["time"], errors="coerce")
+        df = df.dropna(subset=["time"]).copy()
+        df["time"] = df["time"].astype(float)
 
-    # minute utile pour une fusion cible per_minute.
-    if "minute" not in df.columns:
-        df["minute"] = np.floor(df["time"] / 60.0).astype(int)
+        if "minute" not in df.columns:
+            df["minute"] = np.floor(df["time"] / 60.0).astype(int)
 
     return df
 
