@@ -163,13 +163,16 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     plt.tight_layout()
     plt.show()
 
+    # Colonnes agrégées n'existent pas dans raw_df → les exclure des blocs qui opèrent sur raw_df
+    raw_only_feature_cols = [c for c in feature_cols if c in raw_df.columns]
+
     # Barplot % NaN par feature
-    nan_pct = raw_df[feature_cols].isna().mean() * 100
+    nan_pct = raw_df[raw_only_feature_cols].isna().mean() * 100
     nan_pct = nan_pct[nan_pct > 0].sort_values(ascending=False)
     if not nan_pct.empty:
         plt.figure(figsize=(max(8, len(nan_pct) * 0.5), 4))
         sns.barplot(x=nan_pct.index, y=nan_pct.values)
-        plt.title("% de valeurs manquantes par feature")
+        plt.title("% de valeurs manquantes par feature (hors colonnes agrégées)")
         plt.xlabel("Feature")
         plt.ylabel("% NaN")
         plt.xticks(rotation=45, ha="right")
@@ -179,9 +182,9 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
         print("Aucune valeur manquante : barplot ignoré.")
 
     # Heatmap des valeurs manquantes
-    if raw_df[feature_cols].isna().any().any():
+    if raw_df[raw_only_feature_cols].isna().any().any():
         plt.figure(figsize=(12, 6))
-        sns.heatmap(raw_df[feature_cols].isna(), cbar=False)
+        sns.heatmap(raw_df[raw_only_feature_cols].isna(), cbar=False)
         plt.title("Heatmap des valeurs manquantes (True = NaN)")
         plt.xlabel("Features")
         plt.ylabel("Observations")
@@ -190,20 +193,20 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     else:
         print("Aucune valeur manquante dans les features avant imputation.")
 
-    # clip quantiles boxplots    
+    # clip quantiles boxplots
     if clip_quantiles is None:
         print("Bloc 4 : aucun clipping configuré, visualisation ignorée.")
         return
 
     q_low, q_high = clip_quantiles
     clipped_df = raw_df.copy()
-    for col in feature_cols:
+    for col in raw_only_feature_cols:
         clipped_df[col] = clipped_df[col].clip(
             lower=clipped_df[col].quantile(q_low),
             upper=clipped_df[col].quantile(q_high),
         )
 
-    boxplot_features = feature_cols[:6]
+    boxplot_features = raw_only_feature_cols[:6]
     n_cols = 3
     n_rows = (len(boxplot_features) + n_cols - 1) // n_cols
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))

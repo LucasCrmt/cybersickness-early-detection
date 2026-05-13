@@ -40,9 +40,9 @@ def apply_column_aggregations(df, preprocess_profile):
 
         if len(cols_to_merge) == 0:
             raise ValueError(f"column_aggregations['{result_col}']: 'columns' est vide.")
-        if len(cols_to_merge) != 2:
+        if len(cols_to_merge) < 2:
             raise ValueError(
-                f"column_aggregations['{result_col}']: il faut exactement 2 colonnes pour une aggregation pairwise. "
+                f"column_aggregations['{result_col}']: il faut au moins 2 colonnes. "
                 f"Recu: {len(cols_to_merge)}"
             )
 
