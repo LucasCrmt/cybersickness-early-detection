@@ -6,10 +6,42 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_score
 from sklearn.model_selection import ParameterGrid
+from sklearn.preprocessing import LabelEncoder
 from sklearn.svm import SVC, SVR
 from xgboost import XGBClassifier, XGBRegressor
 
 _VALID_MODEL_TYPES = {"random_forest", "xgboost", "svm"}
+
+
+class _XGBClassifierWrapper:
+    """XGBClassifier avec encodage automatique des labels string → int.
+
+    XGBoost n'accepte que des labels numériques en classification.
+    Ce wrapper encode y à l'entraînement et décode les prédictions,
+    rendant le modèle transparent pour le reste de la pipeline.
+    """
+
+    def __init__(self, **kwargs):
+        self._model = XGBClassifier(**kwargs)
+        self._le = LabelEncoder()
+
+    def fit(self, X, y):
+        self._model.fit(X, self._le.fit_transform(y))
+        return self
+
+    def predict(self, X):
+        return self._le.inverse_transform(self._model.predict(X))
+
+    def predict_proba(self, X):
+        return self._model.predict_proba(X)
+
+    @property
+    def classes_(self):
+        return self._le.classes_
+
+    @property
+    def feature_importances_(self):
+        return self._model.feature_importances_
 
 
 def _get_model_type(model_profile):
@@ -58,7 +90,7 @@ def build_model(params, model_profile):
 
     if mt == "xgboost":
         if is_classif:
-            return XGBClassifier(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
+            return _XGBClassifierWrapper(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
         return XGBRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
     if mt == "random_forest":
         if is_classif:
