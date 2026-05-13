@@ -15,6 +15,21 @@ PREPROCESS_PROFILE = {
     "drop_low_information_features": True,
     "min_valid_features": 1,
     "normalization": None,  # None / "standard" / "minmax"
+    
+    # Agrégation de colonnes (optionnel)
+    # Agrégation pairwise: chaque règle fusionne exactement 2 colonnes,
+    # ligne par ligne (pas de moyenne sur une liste de 3+ colonnes).
+    # Exemple : fusionner Left/Right Pupil Diameter en pupil_diameter_avg
+    # "column_aggregations": {
+    #     "pupil_diameter_avg": {
+    #         "columns": ["Left Pupil Diameter", "Right Pupil Diameter"],
+    #         "strategy": "mean"  # mean | min | max | std | sum
+    #     },
+    #     "gaze_xy_std": {
+    #         "columns": ["X gaze direction", "Y gaze direction"],
+    #         "strategy": "std"
+    #     }
+    # },
 }
 
 TARGET_PROFILE = {

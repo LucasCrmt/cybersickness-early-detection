@@ -6,6 +6,75 @@ from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 
+def apply_column_aggregations(df, preprocess_profile):
+    """Fusionne plusieurs colonnes en une seule selon une stratégie d'agrégation.
+
+    Permet par exemple de fusionner "Left Pupil Diameter" et "Right Pupil Diameter"
+    en une seule colonne "pupil_diameter_avg" via stratégie "mean".
+
+    Paramètres :
+    df                : DataFrame
+    preprocess_profile: dict de config, avec clé optionnelle 'column_aggregations'
+        Clé attendue : 'column_aggregations' : dict de la forme
+        {
+            "nom_colonne_resultat": {
+                "columns": ["col1", "col2"],
+                "strategy": "mean" | "min" | "max" | "std" | "sum"
+            },
+            ...
+        }
+
+    Retour :
+    DataFrame avec colonnes agrégées ajoutées (colonnes source conservées).
+    Si 'column_aggregations' est absent, retourne df inchangé.
+    """
+    aggregations = preprocess_profile.get("column_aggregations")
+    if aggregations is None or len(aggregations) == 0:
+        return df
+
+    out = df.copy()
+
+    for result_col, spec in aggregations.items():
+        cols_to_merge = spec.get("columns", [])
+        strategy = spec.get("strategy", "mean")
+
+        if len(cols_to_merge) == 0:
+            raise ValueError(f"column_aggregations['{result_col}']: 'columns' est vide.")
+        if len(cols_to_merge) != 2:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: il faut exactement 2 colonnes pour une aggregation pairwise. "
+                f"Recu: {len(cols_to_merge)}"
+            )
+
+        missing = [c for c in cols_to_merge if c not in out.columns]
+        if missing:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: colonnes absentes: {missing}. "
+                f"Colonnes disponibles: {list(out.columns)}"
+            )
+
+        # Extraire et convertir en numériques
+        subset = out[cols_to_merge].apply(pd.to_numeric, errors="coerce")
+
+        if strategy == "mean":
+            out[result_col] = subset.mean(axis=1)
+        elif strategy == "min":
+            out[result_col] = subset.min(axis=1)
+        elif strategy == "max":
+            out[result_col] = subset.max(axis=1)
+        elif strategy == "std":
+            out[result_col] = subset.std(axis=1)
+        elif strategy == "sum":
+            out[result_col] = subset.sum(axis=1)
+        else:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: stratégie inconnue '{strategy}'. "
+                f"Stratégies supportées: mean, min, max, std, sum"
+            )
+
+    return out
+
+
 def apply_target_discretization(df, target_profile):
     out = df.copy()
 
@@ -43,6 +112,9 @@ def apply_target_discretization(df, target_profile):
 
 def apply_preprocess(df, preprocess_profile):
     out = df.copy()
+
+    # Agrégation de colonnes si configurée (avant tout autre traitement)
+    out = apply_column_aggregations(out, preprocess_profile)
 
     if "n_valid_features" in out.columns:
         out = out[out["n_valid_features"] >= preprocess_profile.get("min_valid_features", 1)].copy()
