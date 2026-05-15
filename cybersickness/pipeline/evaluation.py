@@ -38,7 +38,8 @@ def evaluate_test_set(
         report = classification_report(y_test, pred_test, zero_division=0)
 
         if show_plots:
-            observed_labels = set(y_test) | set(pred_test)
+            observed = pd.concat([pd.Series(y_test), pd.Series(pred_test)], ignore_index=True)
+            observed_labels = [x for x in observed.dropna().unique().tolist()]
 
             if class_order is not None:
                 labels = [c for c in class_order if c in observed_labels]
@@ -49,18 +50,28 @@ def evaluate_test_set(
 
                 if configured_order is not None:
                     labels = [c for c in configured_order if c in observed_labels]
+                    if len(labels) == 0:
+                        # Fallback by string value when configured labels and predictions have different dtypes.
+                        by_str = {}
+                        for obs_label in observed_labels:
+                            by_str[str(obs_label)] = obs_label
+                        labels = [by_str[str(c)] for c in configured_order if str(c) in by_str]
                 else:
                     labels = sorted(observed_labels, key=str)
 
-            cm = confusion_matrix(y_test, pred_test, labels=labels)
-            plt.figure(figsize=(8, 6))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                        xticklabels=labels, yticklabels=labels)
-            plt.title("Matrice de confusion - Test")
-            plt.xlabel("Predit")
-            plt.ylabel("Reel")
-            plt.tight_layout()
-            plt.show()
+            if len(labels) == 0:
+                labels = sorted(observed_labels, key=str)
+
+            if len(labels) > 0:
+                cm = confusion_matrix(y_test, pred_test, labels=labels)
+                plt.figure(figsize=(8, 6))
+                sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                            xticklabels=labels, yticklabels=labels)
+                plt.title("Matrice de confusion - Test")
+                plt.xlabel("Predit")
+                plt.ylabel("Reel")
+                plt.tight_layout()
+                plt.show()
 
         return pred_test, metrics, report
 
@@ -163,11 +174,18 @@ def plot_pca_if_classification(X_test_imp, y_test, model_profile, seed=42):
     if model_profile["task_type"] != "classification":
         return
 
-    if X_test_imp.shape[1] < 2:
+    X_for_pca = np.asarray(X_test_imp)
+    if X_for_pca.ndim == 3:
+        # Flatten temporal tensors (n_samples, seq_len, n_features) for PCA visualization.
+        X_for_pca = X_for_pca.reshape(X_for_pca.shape[0], -1)
+    elif X_for_pca.ndim != 2:
+        return
+
+    if X_for_pca.shape[1] < 2:
         return
 
     pca = PCA(n_components=2, random_state=seed)
-    X_2d = pca.fit_transform(X_test_imp)
+    X_2d = pca.fit_transform(X_for_pca)
 
     plt.figure(figsize=(8, 6))
     sns.scatterplot(x=X_2d[:, 0], y=X_2d[:, 1], hue=y_test, palette="tab10", s=40)
