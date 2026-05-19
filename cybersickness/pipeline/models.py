@@ -219,10 +219,20 @@ class KerasSklearnWrapper:
         self.model = None
         self.learning_rate = params.get("learning_rate", 0.001)
         self.batch_size = params.get("batch_size", 32)
+        self.classes_ = None
+        self.class_to_index_ = None
     
     def fit(self, X, y):
         """Entraîne le modèle."""
         from tensorflow.keras.optimizers import Adam
+
+        y_train = y
+        if self.is_classif:
+            # Keras sparse_categorical_crossentropy attend des labels entiers.
+            y_series = pd.Series(y)
+            self.classes_ = list(pd.unique(y_series.dropna()))
+            self.class_to_index_ = {label: i for i, label in enumerate(self.classes_)}
+            y_train = y_series.map(self.class_to_index_).to_numpy(dtype=np.int32)
         
         self.model = self.model_builder(self.input_shape, self.output_shape, self.is_classif, self.params)
         self.model.compile(
@@ -230,14 +240,17 @@ class KerasSklearnWrapper:
             loss='sparse_categorical_crossentropy' if self.is_classif else 'mse',
             metrics=['accuracy' if self.is_classif else 'mse']
         )
-        self.model.fit(X, y, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
+        self.model.fit(X, y_train, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
         return self
     
     def predict(self, X):
         """Prédit sur les données."""
         predictions = self.model.predict(X, verbose=0)
         if self.is_classif:
-            return np.argmax(predictions, axis=1)
+            pred_idx = np.argmax(predictions, axis=1)
+            if self.classes_ is not None:
+                return np.asarray([self.classes_[int(i)] for i in pred_idx], dtype=object)
+            return pred_idx
         return predictions.flatten()
 
 
