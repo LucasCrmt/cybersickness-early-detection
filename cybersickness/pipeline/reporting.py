@@ -366,6 +366,119 @@ def visual_clipping_boxplots(context, save_figure):
     save_figure(fig, "clipping_boxplots")
 
 
+def _temporal_subject_stats(df, time_col):
+    rows = []
+    for sid, g in df.groupby("subject_id", observed=True):
+        t = pd.to_numeric(g[time_col], errors="coerce").dropna().sort_values().to_numpy(dtype=float)
+        if t.size < 2:
+            rows.append({"subject_id": str(sid), "n_samples": int(t.size), "duration_s": 0.0})
+            continue
+        rows.append(
+            {
+                "subject_id": str(sid),
+                "n_samples": int(t.size),
+                "duration_s": float(t[-1] - t[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def visual_temporal_preprocess_pages(context, save_figure):
+    """Pages de diagnostic temporel pour l'approche B (series temporelles)."""
+    raw_df = context["raw_df"]
+    dataset_df = context["dataset_df"]
+    preprocess_profile = context["preprocess_profile"] or {}
+    feature_cols = context["feature_cols"]
+
+    if raw_df is None or raw_df.empty or dataset_df.empty:
+        return
+    if "subject_id" not in raw_df.columns or "subject_id" not in dataset_df.columns:
+        return
+
+    time_col = preprocess_profile.get("time_col", "time")
+    if time_col not in raw_df.columns or time_col not in dataset_df.columns:
+        return
+
+    excluded = {"target", "subject_id", "row_id", "minute", "sampling_hz", time_col}
+    signal_cols = [
+        c for c in feature_cols
+        if c in dataset_df.columns and c not in excluded and pd.api.types.is_numeric_dtype(dataset_df[c])
+    ]
+    if not signal_cols:
+        return
+
+    selected_cols = signal_cols[:4]
+    raw_stats = _temporal_subject_stats(raw_df, time_col)
+    proc_stats = _temporal_subject_stats(dataset_df, time_col)
+    if raw_stats.empty and proc_stats.empty:
+        return
+
+    merged = raw_stats.merge(proc_stats, on="subject_id", how="outer", suffixes=("_raw", "_proc")).fillna(0)
+    merged = merged.sort_values("n_samples_proc", ascending=False).head(10)
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    x = np.arange(len(merged))
+
+    axes[0, 0].bar(x - 0.2, merged["n_samples_raw"], width=0.4, label="Avant", color="#4C72B0")
+    axes[0, 0].bar(x + 0.2, merged["n_samples_proc"], width=0.4, label="Apres", color="#55A868")
+    axes[0, 0].set_xticks(x)
+    axes[0, 0].set_xticklabels(merged["subject_id"], rotation=45, ha="right")
+    axes[0, 0].set_title("Densite d'echantillonnage par sujet")
+    axes[0, 0].set_ylabel("Nombre d'echantillons")
+    axes[0, 0].legend()
+
+    axes[0, 1].bar(x - 0.2, merged["duration_s_raw"], width=0.4, label="Avant", color="#4C72B0")
+    axes[0, 1].bar(x + 0.2, merged["duration_s_proc"], width=0.4, label="Apres", color="#55A868")
+    axes[0, 1].set_xticks(x)
+    axes[0, 1].set_xticklabels(merged["subject_id"], rotation=45, ha="right")
+    axes[0, 1].set_title("Couverture temporelle par sujet")
+    axes[0, 1].set_ylabel("Duree (s)")
+    axes[0, 1].legend()
+
+    raw_dt = raw_df.groupby("subject_id", observed=True)[time_col].apply(
+        lambda s: pd.Series(np.diff(np.sort(pd.to_numeric(s, errors="coerce").dropna().to_numpy(dtype=float))))
+    )
+    proc_dt = dataset_df.groupby("subject_id", observed=True)[time_col].apply(
+        lambda s: pd.Series(np.diff(np.sort(pd.to_numeric(s, errors="coerce").dropna().to_numpy(dtype=float))))
+    )
+    raw_dt = pd.to_numeric(raw_dt, errors="coerce")
+    proc_dt = pd.to_numeric(proc_dt, errors="coerce")
+    raw_dt = raw_dt[(raw_dt > 0) & np.isfinite(raw_dt)]
+    proc_dt = proc_dt[(proc_dt > 0) & np.isfinite(proc_dt)]
+
+    if len(raw_dt) > 0:
+        sns.kdeplot(raw_dt, ax=axes[1, 0], label="Avant", color="#4C72B0", fill=True, alpha=0.2)
+    if len(proc_dt) > 0:
+        sns.kdeplot(proc_dt, ax=axes[1, 0], label="Apres", color="#55A868", fill=True, alpha=0.2)
+    axes[1, 0].set_title("Distribution des pas temporels (delta t)")
+    axes[1, 0].set_xlabel("Delta t (s)")
+    axes[1, 0].set_ylabel("Densite")
+    axes[1, 0].legend()
+
+    top_subject = merged.iloc[0]["subject_id"] if len(merged) else str(dataset_df["subject_id"].iloc[0])
+    raw_sub = raw_df[raw_df["subject_id"].astype(str) == str(top_subject)].copy().sort_values(time_col)
+    proc_sub = dataset_df[dataset_df["subject_id"].astype(str) == str(top_subject)].copy().sort_values(time_col)
+
+    for feat in selected_cols:
+        if feat in raw_sub.columns:
+            axes[1, 1].plot(raw_sub[time_col], raw_sub[feat], alpha=0.25, linewidth=1.0, label=f"{feat} (avant)")
+        if feat in proc_sub.columns:
+            axes[1, 1].plot(proc_sub[time_col], proc_sub[feat], alpha=0.9, linewidth=2.0, label=f"{feat} (apres)")
+
+    axes[1, 1].set_title(f"Dynamique de signaux - sujet {top_subject}")
+    axes[1, 1].set_xlabel("Temps (s)")
+    axes[1, 1].set_ylabel("Valeur")
+    handles, labels = axes[1, 1].get_legend_handles_labels()
+    if len(handles) > 8:
+        handles = handles[:8]
+        labels = labels[:8]
+    axes[1, 1].legend(handles, labels, loc="best", fontsize=8)
+
+    fig.suptitle("Rapport de pretraitement temporel - Approche B", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    save_figure(fig, "temporal_preprocess_overview")
+
+
 VISUAL_REPORT_FUNCTIONS = {
     "visual_cover_page": visual_cover_page,
     "visual_split_report": visual_split_report,
@@ -373,6 +486,7 @@ VISUAL_REPORT_FUNCTIONS = {
     "visual_violin_pages": visual_violin_pages,
     "visual_missing_values_bar": visual_missing_values_bar,
     "visual_clipping_boxplots": visual_clipping_boxplots,
+    "visual_temporal_preprocess_pages": visual_temporal_preprocess_pages,
 }
 
 
