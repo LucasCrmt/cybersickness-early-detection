@@ -5,6 +5,7 @@ from datetime import datetime
 
 import joblib
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -70,6 +71,273 @@ def _get_target_order(dataset_df, target_profile):
         present = set(dataset_df["target"].dropna().unique())
         return [label for label in configured_order if label in present]
     return sorted(dataset_df["target"].dropna().unique(), key=str)
+
+
+def _build_architecture_blocks(model_type, params, task_type, n_features):
+    output_head = "Softmax" if task_type == "classification" else "Linear"
+
+    input_color = "#EAF2FF"
+    core_color = "#DCEBFF"
+    dense_color = "#E8F5E9"
+    output_color = "#FFF1D6"
+
+    if model_type == "random_forest":
+        return [
+            {"title": "Input", "subtitle": f"{n_features} features", "color": input_color},
+            {"title": "RandomForest", "subtitle": f"{int(params.get('n_estimators', 200))} trees", "color": core_color},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    if model_type == "xgboost":
+        return [
+            {"title": "Input", "subtitle": f"{n_features} features", "color": input_color},
+            {"title": "XGBoost", "subtitle": f"{int(params.get('n_estimators', 100))} estimators", "color": core_color},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    if model_type == "cnn_1d":
+        return [
+            {"title": "Input", "subtitle": "Sequence", "color": input_color},
+            {"title": "Conv1D", "subtitle": f"f={int(params.get('filters', 32))}, k={int(params.get('kernel_size', 3))}", "color": "#DCEBFF"},
+            {"title": "Conv1D", "subtitle": f"f={int(params.get('filters', 32)) * 2}", "color": "#CBE8F6"},
+            {"title": "GAP", "subtitle": "GlobalAveragePooling1D", "color": dense_color},
+            {"title": "Dense", "subtitle": "64 units", "color": "#DFF3E3"},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    if model_type == "inception_time":
+        return [
+            {"title": "Input", "subtitle": "Sequence", "color": input_color},
+            {"title": "Inception", "subtitle": "Conv k=1 / 3 / 5", "color": "#DCEBFF"},
+            {"title": "Stack", "subtitle": f"depth={int(params.get('depth', 2))}", "color": "#CBE8F6"},
+            {"title": "GAP", "subtitle": "GlobalAveragePooling1D", "color": dense_color},
+            {"title": "Dense", "subtitle": "64 units", "color": "#DFF3E3"},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    if model_type == "bilstm":
+        return [
+            {"title": "Input", "subtitle": "Sequence", "color": input_color},
+            {"title": "BiLSTM", "subtitle": f"units={int(params.get('units', 32))}", "color": "#DCEBFF"},
+            {"title": "BiLSTM", "subtitle": f"units={int(params.get('units', 32))}", "color": "#CBE8F6"},
+            {"title": "Dense", "subtitle": "64 units", "color": "#DFF3E3"},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    if model_type == "cnn_lstm":
+        return [
+            {"title": "Input", "subtitle": "Sequence", "color": input_color},
+            {"title": "Conv1D", "subtitle": f"f={int(params.get('cnn_filters', 32))}, k={int(params.get('cnn_kernel', 3))}", "color": "#DCEBFF"},
+            {"title": "Conv1D", "subtitle": f"f={int(params.get('cnn_filters', 32)) * 2}", "color": "#CBE8F6"},
+            {"title": "LSTM", "subtitle": f"units={int(params.get('lstm_units', 32))}", "color": "#D7EEF2"},
+            {"title": "Dense", "subtitle": "64 units", "color": "#DFF3E3"},
+            {"title": "Output", "subtitle": output_head, "color": output_color},
+        ]
+
+    return [
+        {"title": "Input", "subtitle": f"{n_features} features", "color": input_color},
+        {"title": "Model", "subtitle": model_type or "unknown", "color": core_color},
+        {"title": "Output", "subtitle": output_head, "color": output_color},
+    ]
+
+
+def _draw_architecture_schema(ax, blocks):
+    ax.set_axis_off()
+    n = len(blocks)
+    if n == 0:
+        return
+
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    panel = FancyBboxPatch(
+        (0.02, 0.08),
+        0.96,
+        0.84,
+        boxstyle="round,pad=0.02,rounding_size=0.02",
+        linewidth=1.0,
+        edgecolor="#D6DFEA",
+        facecolor="#FBFCFE",
+        transform=ax.transAxes,
+        zorder=0,
+    )
+    ax.add_patch(panel)
+
+    ax.text(
+        0.5,
+        0.88,
+        "Schéma simplifié du flux de données",
+        ha="center",
+        va="center",
+        fontsize=11,
+        fontweight="bold",
+        color="#223",
+        transform=ax.transAxes,
+    )
+    ax.text(
+        0.5,
+        0.83,
+        "Chaque bloc reflète la structure du modèle et ses hyperparamètres principaux",
+        ha="center",
+        va="center",
+        fontsize=8.5,
+        color="#556",
+        transform=ax.transAxes,
+    )
+
+    y = 0.48
+    box_w = min(0.18, 0.78 / max(1, n))
+    box_h = 0.22
+    start_x = 0.5 - ((n * box_w) + ((n - 1) * 0.04)) / 2
+
+    for i, block in enumerate(blocks):
+        x = start_x + i * (box_w + 0.04)
+        shadow = FancyBboxPatch(
+            (x + 0.006, y - box_h / 2 - 0.006),
+            box_w,
+            box_h,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            linewidth=0,
+            facecolor="#000000",
+            alpha=0.05,
+            transform=ax.transAxes,
+            zorder=1,
+        )
+        ax.add_patch(shadow)
+        rect = FancyBboxPatch(
+            (x, y - box_h / 2),
+            box_w,
+            box_h,
+            boxstyle="round,pad=0.02,rounding_size=0.03",
+            linewidth=1.4,
+            edgecolor="#6D86A6",
+            facecolor=block.get("color", "#E9F1FB"),
+            transform=ax.transAxes,
+            zorder=2,
+        )
+        ax.add_patch(rect)
+        ax.text(
+            x + 0.03,
+            y + 0.06,
+            str(i + 1),
+            ha="center",
+            va="center",
+            fontsize=8,
+            color="#445",
+            fontweight="bold",
+            transform=ax.transAxes,
+            bbox=dict(boxstyle="circle,pad=0.18", facecolor="#FFFFFF", edgecolor="#B8C4D4", linewidth=0.8),
+            zorder=3,
+        )
+        ax.text(
+            x + box_w / 2,
+            y + 0.035,
+            block["title"],
+            ha="center",
+            va="center",
+            fontsize=10.5,
+            fontweight="bold",
+            color="#1F2D3D",
+            transform=ax.transAxes,
+            zorder=3,
+        )
+        ax.text(
+            x + box_w / 2,
+            y - 0.06,
+            block["subtitle"],
+            ha="center",
+            va="center",
+            fontsize=8.2,
+            color="#304050",
+            transform=ax.transAxes,
+            zorder=3,
+        )
+
+        if i < n - 1:
+            x_next = start_x + (i + 1) * (box_w + 0.04)
+            arr = FancyArrowPatch(
+                (x + box_w, y),
+                (x_next, y),
+                arrowstyle="-|>",
+                mutation_scale=14,
+                linewidth=1.1,
+                color="#7E93B2",
+                transform=ax.transAxes,
+                zorder=4,
+            )
+            ax.add_patch(arr)
+
+    ax.text(
+        0.5,
+        0.17,
+        "Schéma généré automatiquement à partir du type de modèle et des meilleurs paramètres",
+        ha="center",
+        va="center",
+        fontsize=8,
+        color="#667",
+        transform=ax.transAxes,
+    )
+
+
+def _summarize_architecture_rows(model_type, task_type, best_params):
+    rows = [
+        ["Model type", model_type],
+        ["Task type", task_type],
+    ]
+
+    if best_params:
+        for key in sorted(best_params.keys()):
+            rows.append([str(key), str(best_params[key])])
+    else:
+        rows.append(["Hyperparameters", "best_params non fournis (valeurs par defaut du modele)"])
+
+    return rows
+
+
+def visual_model_architecture_page(context, save_figure):
+    model_profile = context["model_profile"] or {}
+    feature_cols = context["feature_cols"] or []
+    best_params = context.get("best_params") or {}
+
+    model_type = str(model_profile.get("model_type", "random_forest")).lower()
+    task_type = str(model_profile.get("task_type", "unknown"))
+
+    blocks = _build_architecture_blocks(
+        model_type=model_type,
+        params=best_params,
+        task_type=task_type,
+        n_features=len(feature_cols),
+    )
+    rows = _summarize_architecture_rows(model_type, task_type, best_params)
+
+    fig = plt.figure(figsize=(11.7, 8.3))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.0])
+    ax_schema = fig.add_subplot(gs[0])
+    ax_table = fig.add_subplot(gs[1])
+
+    fig.suptitle("Architecture du modele", fontsize=15, fontweight="bold")
+    _draw_architecture_schema(ax_schema, blocks)
+
+    ax_table.axis("off")
+    table = ax_table.table(
+        cellText=rows,
+        colLabels=["Element", "Valeur"],
+        cellLoc="left",
+        colLoc="left",
+        bbox=[0.08, 0.02, 0.84, 0.90],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1.0, 1.2)
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(fontweight="bold")
+            cell.set_facecolor("#e8eefc")
+        elif row % 2 == 0:
+            cell.set_facecolor("#f8f9fc")
+
+    fig.tight_layout()
+    save_figure(fig, "model_architecture")
 
 
 def visual_cover_page(context, save_figure):
@@ -481,6 +749,7 @@ def visual_temporal_preprocess_pages(context, save_figure):
 
 VISUAL_REPORT_FUNCTIONS = {
     "visual_cover_page": visual_cover_page,
+    "visual_model_architecture_page": visual_model_architecture_page,
     "visual_split_report": visual_split_report,
     "visual_correlation_pages": visual_correlation_pages,
     "visual_violin_pages": visual_violin_pages,
@@ -526,6 +795,7 @@ def export_visual_report(
     target_profile=None,
     raw_df=None,
     preprocess_profile=None,
+    best_params=None,
 ):
     """
     Exporte un rapport visuel modulaire compose de visualisations selectionnables.
@@ -541,6 +811,7 @@ def export_visual_report(
     target_profile            : configuration cible pour l'ordre des classes (optionnel)
     raw_df                    : dataframe avant pretraitement pour les pages NaN (optionnel)
     preprocess_profile        : configuration pretraitement pour afficher le clipping (optionnel)
+    best_params               : meilleurs hyperparametres (optionnel, pour la page architecture)
 
     output_profile optionnel :
     visual_report_functions   : "all" ou liste de noms de fonctions de visualisation
@@ -593,6 +864,7 @@ def export_visual_report(
         "raw_df": raw_df,
         "preprocess_profile": preprocess_profile,
         "ranked_num_cols": ranked_num_cols,
+        "best_params": best_params,
     }
 
     try:

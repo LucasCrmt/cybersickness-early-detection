@@ -88,6 +88,7 @@ OUTPUT_PROFILE = {
     # "all" pour tout, ou une liste explicite de fonctions
     "visual_report_functions": [
         "visual_cover_page",
+        "visual_model_architecture_page",
         "visual_split_report",
         "visual_correlation_pages",
         "visual_violin_pages",
