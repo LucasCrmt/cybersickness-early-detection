@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import numpy as np
 
 
 def plot_split_report(dataset_df, train_idx, val_idx, test_idx, model_profile):
@@ -163,7 +164,7 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     plt.tight_layout()
     plt.show()
 
-    # Colonnes agrégées n'existent pas dans raw_df → les exclure des blocs qui opèrent sur raw_df
+    # Colonnes aggregees n'existent pas dans raw_df -> les exclure des blocs qui operent sur raw_df
     raw_only_feature_cols = [c for c in feature_cols if c in raw_df.columns]
 
     # Barplot % NaN par feature
@@ -172,14 +173,14 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     if not nan_pct.empty:
         plt.figure(figsize=(max(8, len(nan_pct) * 0.5), 4))
         sns.barplot(x=nan_pct.index, y=nan_pct.values)
-        plt.title("% de valeurs manquantes par feature (hors colonnes agrégées)")
+        plt.title("% de valeurs manquantes par feature (hors colonnes aggregees)")
         plt.xlabel("Feature")
         plt.ylabel("% NaN")
         plt.xticks(rotation=45, ha="right")
         plt.tight_layout()
         plt.show()
     else:
-        print("Aucune valeur manquante : barplot ignoré.")
+        print("Aucune valeur manquante : barplot ignore.")
 
     # Heatmap des valeurs manquantes
     if raw_df[raw_only_feature_cols].isna().any().any():
@@ -195,7 +196,7 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
 
     # clip quantiles boxplots
     if clip_quantiles is None:
-        print("Bloc 4 : aucun clipping configuré, visualisation ignorée.")
+        print("Bloc 4 : aucun clipping configure, visualisation ignoree.")
         return
 
     q_low, q_high = clip_quantiles
@@ -214,8 +215,307 @@ def plot_preprocessing_report(raw_df, processed_df, feature_cols, preprocess_pro
     for i, col in enumerate(boxplot_features):
         sns.boxplot(data=[raw_df[col], clipped_df[col]], ax=axes[i])
         axes[i].set_title(f"Feature: {col}")
-        axes[i].set_xticklabels(["Avant", "Après"])
+        axes[i].set_xticklabels(["Avant", "Apres"])
     for j in range(len(boxplot_features), len(axes)):
         axes[j].set_visible(False)
     plt.tight_layout()
     plt.show()
+
+
+def _collect_temporal_feature_columns(df, feature_cols, time_col):
+    excluded = {"target", "subject_id", "row_id", "minute", "sampling_hz", time_col}
+    return [
+        c for c in feature_cols
+        if c in df.columns and c not in excluded and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+
+def _temporal_subject_stats(df, time_col):
+    if df.empty:
+        return pd.DataFrame(columns=["subject_id", "n_samples", "duration_s", "median_dt_s"])
+
+    rows = []
+    for sid, g in df.groupby("subject_id", observed=True):
+        t = pd.to_numeric(g[time_col], errors="coerce").dropna().sort_values().to_numpy(dtype=float)
+        if t.size < 2:
+            rows.append({"subject_id": str(sid), "n_samples": int(t.size), "duration_s": 0.0, "median_dt_s": np.nan})
+            continue
+        dt = np.diff(t)
+        dt = dt[dt > 0]
+        rows.append(
+            {
+                "subject_id": str(sid),
+                "n_samples": int(t.size),
+                "duration_s": float(t[-1] - t[0]),
+                "median_dt_s": float(np.median(dt)) if dt.size else np.nan,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _compute_subject_fft_spectrum(df, subject_id, time_col, feature_cols, max_points=4096):
+    """Calcule un spectre de puissance moyen (FFT) pour un sujet et un ensemble de features."""
+    sub = df[df["subject_id"].astype(str) == str(subject_id)].copy()
+    if sub.empty:
+        return None, None
+
+    sub[time_col] = pd.to_numeric(sub[time_col], errors="coerce")
+    sub = sub.dropna(subset=[time_col]).sort_values(time_col)
+    if len(sub) < 8:
+        return None, None
+
+    spectra = []
+    freq_axis = None
+
+    for feat in feature_cols:
+        if feat not in sub.columns:
+            continue
+
+        tmp = sub[[time_col, feat]].copy()
+        tmp[feat] = pd.to_numeric(tmp[feat], errors="coerce")
+        tmp = tmp.dropna(subset=[time_col, feat])
+        if len(tmp) < 8:
+            continue
+
+        # Agrège les temps dupliqués pour garantir une interpolation stable.
+        tmp = tmp.groupby(time_col, as_index=False)[feat].mean().sort_values(time_col)
+        t = tmp[time_col].to_numpy(dtype=float)
+        y = tmp[feat].to_numpy(dtype=float)
+        if len(t) < 8:
+            continue
+
+        dt_candidates = np.diff(t)
+        dt_candidates = dt_candidates[dt_candidates > 0]
+        if len(dt_candidates) == 0:
+            continue
+
+        dt = float(np.median(dt_candidates))
+        if not np.isfinite(dt) or dt <= 0:
+            continue
+
+        t_min, t_max = float(t[0]), float(t[-1])
+        n_points = int(np.floor((t_max - t_min) / dt)) + 1
+        if n_points < 8:
+            continue
+
+        if n_points > max_points:
+            n_points = max_points
+        t_grid = np.linspace(t_min, t_max, n_points)
+        if n_points > 1:
+            dt = float(t_grid[1] - t_grid[0])
+
+        y_interp = np.interp(t_grid, t, y)
+        y_interp = y_interp - np.nanmean(y_interp)
+        if np.allclose(y_interp, 0):
+            continue
+
+        window = np.hanning(len(y_interp))
+        y_win = y_interp * window
+
+        fft_vals = np.fft.rfft(y_win)
+        freqs = np.fft.rfftfreq(len(y_win), d=dt)
+        power = (np.abs(fft_vals) ** 2).astype(float)
+        if len(power) == 0:
+            continue
+
+        # Ignore la composante continue pour comparer la dynamique fréquentielle.
+        if len(power) > 1:
+            power[0] = 0.0
+        if np.max(power) > 0:
+            power = power / np.max(power)
+
+        if freq_axis is None:
+            freq_axis = freqs
+            spectra.append(power)
+        else:
+            # Rééchantillonne si les axes diffèrent légèrement selon la feature.
+            if len(freqs) != len(freq_axis) or not np.allclose(freqs, freq_axis):
+                power = np.interp(freq_axis, freqs, power, left=np.nan, right=np.nan)
+            spectra.append(power)
+
+    if not spectra:
+        return None, None
+
+    spec_mat = np.vstack(spectra)
+    avg_spec = np.nanmedian(spec_mat, axis=0)
+    valid = np.isfinite(freq_axis) & np.isfinite(avg_spec)
+    if valid.sum() < 4:
+        return None, None
+
+    return freq_axis[valid], avg_spec[valid]
+
+
+def plot_temporal_preprocessing_report(
+    raw_df,
+    processed_df,
+    feature_cols,
+    preprocess_profile,
+    max_subjects=10,
+    max_features=4,
+):
+    """
+    Rapport visuel de pretraitement pour l'approche B (series temporelles).
+
+    Cette visualisation est volontairement differente de l'approche A:
+    - couverture temporelle et densite d'echantillonnage par sujet
+    - evolution des deltas de temps avant/apres pretraitement
+    - comparaison de la dynamique d'un sous-ensemble de signaux
+    """
+    time_col = preprocess_profile.get("time_col", "time")
+    if time_col not in raw_df.columns or time_col not in processed_df.columns:
+        raise ValueError(
+            f"Colonne temporelle '{time_col}' absente. Colonnes raw: {list(raw_df.columns)}"
+        )
+
+    if "subject_id" not in raw_df.columns or "subject_id" not in processed_df.columns:
+        raise ValueError("Les DataFrame doivent contenir la colonne 'subject_id'.")
+
+    feature_candidates = _collect_temporal_feature_columns(processed_df, feature_cols, time_col)
+    if not feature_candidates:
+        print("Aucune feature numerique temporelle disponible pour le rapport B.")
+        return
+
+    chosen_features = feature_candidates[:max_features]
+
+    raw_stats = _temporal_subject_stats(raw_df, time_col)
+    proc_stats = _temporal_subject_stats(processed_df, time_col)
+    merged_stats = raw_stats.merge(proc_stats, on="subject_id", how="outer", suffixes=("_raw", "_proc")).fillna(0)
+    merged_stats = merged_stats.sort_values("n_samples_proc", ascending=False).head(max_subjects)
+
+    print("=== Diagnostic temporel (Approche B) ===")
+    print(f"Sujets raw/proc: {raw_df['subject_id'].nunique()} / {processed_df['subject_id'].nunique()}")
+    print(f"Features inspectees: {chosen_features}")
+    if preprocess_profile.get("frequency_sampling_hz") is not None:
+        print(f"Frequency sampling (Hz): {preprocess_profile.get('frequency_sampling_hz')}")
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+    # (1) Nombre d'echantillons par sujet avant/apres
+    ax = axes[0, 0]
+    x = np.arange(len(merged_stats))
+    ax.bar(x - 0.2, merged_stats["n_samples_raw"], width=0.4, label="Avant", color="#4C72B0")
+    ax.bar(x + 0.2, merged_stats["n_samples_proc"], width=0.4, label="Apres", color="#55A868")
+    ax.set_xticks(x)
+    ax.set_xticklabels(merged_stats["subject_id"], rotation=45, ha="right")
+    ax.set_title("Densite d'echantillonnage par sujet")
+    ax.set_ylabel("Nombre d'echantillons")
+    ax.legend()
+
+    # (2) Duree temporelle couverte par sujet
+    ax = axes[0, 1]
+    ax.bar(x - 0.2, merged_stats["duration_s_raw"], width=0.4, label="Avant", color="#4C72B0")
+    ax.bar(x + 0.2, merged_stats["duration_s_proc"], width=0.4, label="Apres", color="#55A868")
+    ax.set_xticks(x)
+    ax.set_xticklabels(merged_stats["subject_id"], rotation=45, ha="right")
+    ax.set_title("Couverture temporelle par sujet")
+    ax.set_ylabel("Duree (s)")
+    ax.legend()
+
+    # (3) Distribution des deltas de temps
+    ax = axes[1, 0]
+    raw_dt = raw_df.groupby("subject_id", observed=True)[time_col].apply(
+        lambda s: pd.Series(np.diff(np.sort(pd.to_numeric(s, errors="coerce").dropna().to_numpy(dtype=float))))
+    )
+    proc_dt = processed_df.groupby("subject_id", observed=True)[time_col].apply(
+        lambda s: pd.Series(np.diff(np.sort(pd.to_numeric(s, errors="coerce").dropna().to_numpy(dtype=float))))
+    )
+    raw_dt = pd.to_numeric(raw_dt, errors="coerce")
+    proc_dt = pd.to_numeric(proc_dt, errors="coerce")
+    raw_dt = raw_dt[(raw_dt > 0) & np.isfinite(raw_dt)]
+    proc_dt = proc_dt[(proc_dt > 0) & np.isfinite(proc_dt)]
+    if len(raw_dt) > 0:
+        sns.kdeplot(raw_dt, ax=ax, label="Avant", color="#4C72B0", fill=True, alpha=0.2)
+    if len(proc_dt) > 0:
+        sns.kdeplot(proc_dt, ax=ax, label="Apres", color="#55A868", fill=True, alpha=0.2)
+    ax.set_title("Distribution des pas temporels (delta t)")
+    ax.set_xlabel("Delta t (s)")
+    ax.set_ylabel("Densite")
+    ax.legend()
+
+    # (4) Evolution temporelle de features (sujet representatif)
+    ax = axes[1, 1]
+    top_subject = merged_stats.iloc[0]["subject_id"] if len(merged_stats) else str(processed_df["subject_id"].iloc[0])
+    raw_sub = raw_df[raw_df["subject_id"].astype(str) == str(top_subject)].copy().sort_values(time_col)
+    proc_sub = processed_df[processed_df["subject_id"].astype(str) == str(top_subject)].copy().sort_values(time_col)
+
+    for feat in chosen_features:
+        if feat in raw_sub.columns:
+            ax.plot(raw_sub[time_col], raw_sub[feat], alpha=0.25, linewidth=1.0, label=f"{feat} (avant)")
+        if feat in proc_sub.columns:
+            ax.plot(proc_sub[time_col], proc_sub[feat], alpha=0.9, linewidth=2.0, label=f"{feat} (apres)")
+
+    ax.set_title(f"Dynamique de signaux - sujet {top_subject}")
+    ax.set_xlabel("Temps (s)")
+    ax.set_ylabel("Valeur")
+    handles, labels = ax.get_legend_handles_labels()
+    if len(handles) > 8:
+        handles = handles[:8]
+        labels = labels[:8]
+    ax.legend(handles, labels, loc="best", fontsize=8)
+
+    plt.suptitle("Rapport de pretraitement temporel - Approche B", fontsize=13, fontweight="bold")
+    plt.tight_layout()
+    plt.show()
+
+    # Figure complementaire: comparaison frequencielle (FFT) raw vs preprocessed.
+    raw_freqs, raw_power = _compute_subject_fft_spectrum(
+        raw_df,
+        subject_id=top_subject,
+        time_col=time_col,
+        feature_cols=chosen_features,
+    )
+    proc_freqs, proc_power = _compute_subject_fft_spectrum(
+        processed_df,
+        subject_id=top_subject,
+        time_col=time_col,
+        feature_cols=chosen_features,
+    )
+
+    if raw_freqs is None and proc_freqs is None:
+        print("FFT non tracee: donnees insuffisantes pour estimer un spectre frequenciel fiable.")
+        return
+
+    plt.figure(figsize=(12, 4.5))
+    if raw_freqs is not None:
+        plt.plot(raw_freqs, raw_power, label="Raw", color="#4C72B0", linewidth=2, alpha=0.9)
+    if proc_freqs is not None:
+        plt.plot(proc_freqs, proc_power, label="Preprocessed", color="#55A868", linewidth=2, alpha=0.9)
+
+    plt.title(f"Comparaison FFT - sujet {top_subject} (spectre moyen normalise)")
+    plt.xlabel("Frequence (Hz)")
+    plt.ylabel("Puissance normalisee")
+    plt.xlim(left=0)
+    plt.grid(alpha=0.25)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_preprocessing_report_by_approach(
+    raw_df,
+    processed_df,
+    feature_cols,
+    preprocess_profile,
+    **kwargs,
+):
+    """Router de visualisation de pretraitement selon l'approche (A/B).
+
+    - Approche A -> plot_preprocessing_report
+    - Approche B -> plot_temporal_preprocessing_report
+    """
+    approach = str((preprocess_profile or {}).get("approach", "A")).strip().upper()
+    if approach == "B":
+        return plot_temporal_preprocessing_report(
+            raw_df=raw_df,
+            processed_df=processed_df,
+            feature_cols=feature_cols,
+            preprocess_profile=preprocess_profile,
+            **kwargs,
+        )
+
+    return plot_preprocessing_report(
+        raw_df=raw_df,
+        processed_df=processed_df,
+        feature_cols=feature_cols,
+        preprocess_profile=preprocess_profile,
+    )
