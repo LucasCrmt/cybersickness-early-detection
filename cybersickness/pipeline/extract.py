@@ -132,6 +132,38 @@ def load_and_resample_features(data_profile, preprocess_profile=None):
     return df
 
 
+def load_features_for_approach(data_profile, preprocess_profile=None, verbose=True):
+    """Charge les features selon l'approche (A/B) et le mode de reechantillonnage.
+
+    Règles :
+    - Approche A : chargement CSV standard
+    - Approche B + use_frequency_resampling=True + frequency_sampling_hz défini :
+      chargement puis reechantillonnage Lomb-Scargle
+    - Approche B sans reechantillonnage : chargement CSV standard en conservant la dimension temporelle
+    """
+    preprocess_profile = preprocess_profile or {}
+    approach = str(preprocess_profile.get("approach", "A")).strip().upper()
+    if approach not in {"A", "B"}:
+        raise ValueError("preprocess_profile['approach'] doit etre 'A' ou 'B'.")
+
+    use_resampling = bool(preprocess_profile.get("use_frequency_resampling", False))
+    has_sampling = preprocess_profile.get("frequency_sampling_hz") is not None
+
+    if approach == "B":
+        if use_resampling and has_sampling:
+            if verbose:
+                print("Approche B activee avec frequency sampling (Lomb-Scargle) sur les donnees brutes.")
+            return load_and_resample_features(data_profile, preprocess_profile)
+
+        if verbose:
+            print("Approche B activee sans reechantillonnage: series temporelles brutes conservees.")
+        return load_csv_features(data_profile)
+
+    if verbose:
+        print("Approche A activee: chargement tabulaire standard.")
+    return load_csv_features(data_profile)
+
+
 # Target helpers
 
 def _normalize_col_name(x):
