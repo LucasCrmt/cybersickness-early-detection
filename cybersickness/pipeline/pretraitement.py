@@ -1,9 +1,132 @@
 import numpy as np
 import pandas as pd
+from scipy.signal import butter, filtfilt
 
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+
+def _resolve_lowpass_features(feature_cols, preprocess_profile):
+    selected = preprocess_profile.get("lowpass_features", "all")
+    if isinstance(selected, str):
+        if selected.strip().lower() != "all":
+            raise ValueError("preprocess_profile['lowpass_features'] doit etre 'all' ou une liste de noms.")
+        return list(feature_cols)
+
+    if not isinstance(selected, (list, tuple, set)):
+        raise ValueError("preprocess_profile['lowpass_features'] doit etre 'all' ou une liste de noms.")
+
+    available_map = {str(c).strip().lower(): c for c in feature_cols}
+    resolved = []
+    missing = []
+    seen = set()
+    for raw_name in selected:
+        key = str(raw_name).strip().lower()
+        if key in available_map:
+            col = available_map[key]
+            if col not in seen:
+                resolved.append(col)
+                seen.add(col)
+        else:
+            missing.append(raw_name)
+
+    if missing:
+        raise ValueError(
+            "Les features suivantes demandees dans lowpass_features sont introuvables: "
+            f"{missing}"
+        )
+
+    return resolved
+
+
+def _apply_temporal_lowpass_filter(df, feature_cols, preprocess_profile):
+    """Applique un filtre passe-bas par sujet sur les features temporelles (approche B)."""
+    out = df.copy()
+
+    approach = str(preprocess_profile.get("approach", "A")).strip().upper()
+    if approach != "B":
+        return out
+    if not bool(preprocess_profile.get("apply_temporal_lowpass", False)):
+        return out
+
+    time_col = preprocess_profile.get("time_col", "time")
+    subject_col = preprocess_profile.get("subject_id_col", "subject_id")
+    if time_col not in out.columns or subject_col not in out.columns:
+        return out
+
+    cutoff_hz = float(preprocess_profile.get("lowpass_cutoff_hz", 0.05))
+    order = int(preprocess_profile.get("lowpass_order", 4))
+    min_points = int(preprocess_profile.get("lowpass_min_points", 16))
+    min_points = max(min_points, 8)
+
+    if cutoff_hz <= 0:
+        raise ValueError("preprocess_profile['lowpass_cutoff_hz'] doit etre > 0.")
+    if order < 1:
+        raise ValueError("preprocess_profile['lowpass_order'] doit etre >= 1.")
+
+    lp_cols = [
+        c for c in _resolve_lowpass_features(feature_cols, preprocess_profile)
+        if c in out.columns and pd.api.types.is_numeric_dtype(out[c])
+    ]
+    if not lp_cols:
+        return out
+
+    for sid, idx in out.groupby(subject_col, sort=False, observed=True).groups.items():
+        sid_idx = pd.Index(idx)
+        block = out.loc[sid_idx, [time_col] + lp_cols].copy()
+        block[time_col] = pd.to_numeric(block[time_col], errors="coerce")
+        block = block.dropna(subset=[time_col]).sort_values(time_col)
+        if len(block) < min_points:
+            continue
+
+        t = block[time_col].to_numpy(dtype=float)
+        dt = np.diff(t)
+        dt = dt[dt > 0]
+        if dt.size == 0:
+            continue
+
+        dt_med = float(np.median(dt))
+        if not np.isfinite(dt_med) or dt_med <= 0:
+            continue
+
+        fs_hz = 1.0 / dt_med
+        nyquist = 0.5 * fs_hz
+        if cutoff_hz >= nyquist:
+            continue
+
+        wn = cutoff_hz / nyquist
+        b, a = butter(order, wn, btype="low", analog=False)
+
+        t_min, t_max = float(np.nanmin(t)), float(np.nanmax(t))
+        n_grid = int(np.floor((t_max - t_min) / dt_med)) + 1
+        if n_grid < min_points:
+            continue
+        t_grid = np.linspace(t_min, t_max, n_grid)
+
+        for col in lp_cols:
+            s = pd.to_numeric(block[col], errors="coerce")
+            valid = s.notna().to_numpy()
+            if int(valid.sum()) < min_points:
+                continue
+
+            t_valid = t[valid]
+            y_valid = s.to_numpy(dtype=float)[valid]
+            if np.unique(t_valid).size < min_points:
+                continue
+
+            y_grid = np.interp(t_grid, t_valid, y_valid)
+            padlen = 3 * (max(len(a), len(b)) - 1)
+            if len(y_grid) <= padlen:
+                continue
+
+            y_filt_grid = filtfilt(b, a, y_grid)
+            y_filt = np.interp(t_valid, t_grid, y_filt_grid)
+
+            target_rows = block.index[valid]
+            out.loc[target_rows, col] = y_filt
+
+    return out
 
 
 def apply_column_aggregations(df, preprocess_profile):
@@ -173,6 +296,9 @@ def apply_preprocess(df, preprocess_profile):
     else:
         raise ValueError("preprocess_profile['include_features'] doit etre 'all' ou une liste de noms de features.")
 
+    # Approche B: filtre passe-bas optionnel sur la dimension temporelle.
+    out = _apply_temporal_lowpass_filter(out, feature_cols, preprocess_profile)
+
     return out, feature_cols
 
 
@@ -257,3 +383,22 @@ def prepare_splits_and_impute(dataset_df, feature_cols, preprocess_profile, mode
         "imputer": imputer,
         "scaler": scaler,
     }
+
+def display_target_info(df, model_profile, target_profile=None, preprocess_profile=None):
+    task = model_profile.get("task_type", "regression")
+    target = df["target"]
+
+    if task == "classification":
+        print("Classes:", sorted(target.dropna().unique().tolist()))
+        print("Distribution:")
+        print(target.value_counts().sort_index())
+    else:
+        print("Distribution cible (regression):")
+        print(target.describe())
+
+    if target_profile and target_profile.get("clip_quantiles"):
+        q_low, q_high = target_profile["clip_quantiles"]
+        print(f"\nClip quantiles cible   : [{q_low}, {q_high}]")
+    if preprocess_profile and preprocess_profile.get("clip_quantiles"):
+        q_low, q_high = preprocess_profile["clip_quantiles"]
+        print(f"Clip quantiles features: [{q_low}, {q_high}]")
