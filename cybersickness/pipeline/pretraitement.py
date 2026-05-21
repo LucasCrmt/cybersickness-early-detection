@@ -1,9 +1,282 @@
 import numpy as np
 import pandas as pd
+from scipy.signal import butter, filtfilt
 
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+
+def _resolve_filter_features(feature_cols, preprocess_profile, profile_key):
+    selected = preprocess_profile.get(profile_key, "all")
+    if isinstance(selected, str):
+        if selected.strip().lower() != "all":
+            raise ValueError(f"preprocess_profile['{profile_key}'] doit etre 'all' ou une liste de noms.")
+        return list(feature_cols)
+
+    if not isinstance(selected, (list, tuple, set)):
+        raise ValueError(f"preprocess_profile['{profile_key}'] doit etre 'all' ou une liste de noms.")
+
+    available_map = {str(c).strip().lower(): c for c in feature_cols}
+    resolved = []
+    missing = []
+    seen = set()
+    for raw_name in selected:
+        key = str(raw_name).strip().lower()
+        if key in available_map:
+            col = available_map[key]
+            if col not in seen:
+                resolved.append(col)
+                seen.add(col)
+        else:
+            missing.append(raw_name)
+
+    if missing:
+        raise ValueError(
+            f"Les features suivantes demandees dans {profile_key} sont introuvables: "
+            f"{missing}"
+        )
+
+    return resolved
+
+
+def _resolve_temporal_filter_specs(feature_cols, preprocess_profile):
+    specs = []
+
+    if bool(preprocess_profile.get("apply_temporal_lowpass", False)):
+        specs.append(
+            {
+                "name": "lowpass",
+                "btype": "low",
+                "order": int(preprocess_profile.get("lowpass_order", 4)),
+                "cutoff_hz": float(preprocess_profile.get("lowpass_cutoff_hz", 0.05)),
+                "min_points": int(preprocess_profile.get("lowpass_min_points", 16)),
+                "cols": _resolve_filter_features(feature_cols, preprocess_profile, "lowpass_features"),
+            }
+        )
+
+    if bool(preprocess_profile.get("apply_temporal_highpass", False)):
+        specs.append(
+            {
+                "name": "highpass",
+                "btype": "high",
+                "order": int(preprocess_profile.get("highpass_order", 4)),
+                "cutoff_hz": float(preprocess_profile.get("highpass_cutoff_hz", 0.01)),
+                "min_points": int(preprocess_profile.get("highpass_min_points", 16)),
+                "cols": _resolve_filter_features(feature_cols, preprocess_profile, "highpass_features"),
+            }
+        )
+
+    if bool(preprocess_profile.get("apply_temporal_bandpass", False)):
+        specs.append(
+            {
+                "name": "bandpass",
+                "btype": "bandpass",
+                "order": int(preprocess_profile.get("bandpass_order", 4)),
+                "low_cutoff_hz": float(preprocess_profile.get("bandpass_low_cutoff_hz", 0.01)),
+                "high_cutoff_hz": float(preprocess_profile.get("bandpass_high_cutoff_hz", 0.2)),
+                "min_points": int(preprocess_profile.get("bandpass_min_points", 16)),
+                "cols": _resolve_filter_features(feature_cols, preprocess_profile, "bandpass_features"),
+            }
+        )
+
+    return specs
+
+
+def _design_subject_filter(spec, nyquist):
+    order = int(spec.get("order", 4))
+    if order < 1:
+        raise ValueError(f"preprocess_profile ordre invalide pour {spec.get('name')}: {order}.")
+
+    btype = spec["btype"]
+    eps = 0.95 * nyquist
+    if btype in {"low", "high"}:
+        cutoff_hz = float(spec["cutoff_hz"])
+        if cutoff_hz <= 0:
+            raise ValueError(f"Cutoff invalide pour {spec.get('name')}: {cutoff_hz}.")
+        if btype == "low":
+            cutoff_hz = min(cutoff_hz, eps)
+            if cutoff_hz <= 0:
+                return None, None
+        else:
+            if cutoff_hz >= nyquist:
+                return None, None
+        wn = cutoff_hz / nyquist
+    elif btype == "bandpass":
+        low_cut = float(spec["low_cutoff_hz"])
+        high_cut = float(spec["high_cutoff_hz"])
+        if low_cut <= 0 or high_cut <= 0:
+            raise ValueError("Les cutoffs bandpass doivent etre > 0.")
+        high_cut = min(high_cut, eps)
+        if not (low_cut < high_cut):
+            return None, None
+        wn = [low_cut / nyquist, high_cut / nyquist]
+    else:
+        raise ValueError(f"Type de filtre non supporte: {btype}")
+
+    return butter(order, wn, btype=btype, analog=False)
+
+
+def _apply_temporal_filters(df, feature_cols, preprocess_profile):
+    """Applique des filtres temporels par sujet (passe-bas, passe-haut, passe-bande)."""
+    out = df.copy()
+
+    approach = str(preprocess_profile.get("approach", "A")).strip().upper()
+    if approach != "B":
+        return out
+
+    filter_specs = _resolve_temporal_filter_specs(feature_cols, preprocess_profile)
+    if not filter_specs:
+        return out
+
+    time_col = preprocess_profile.get("time_col", "time")
+    subject_col = preprocess_profile.get("subject_id_col", "subject_id")
+    if time_col not in out.columns or subject_col not in out.columns:
+        return out
+
+    for spec in filter_specs:
+        spec["min_points"] = max(int(spec.get("min_points", 16)), 8)
+        spec["cols"] = [
+            c for c in spec.get("cols", [])
+            if c in out.columns and pd.api.types.is_numeric_dtype(out[c])
+        ]
+
+    if not any(spec["cols"] for spec in filter_specs):
+        return out
+
+    for sid, idx in out.groupby(subject_col, sort=False, observed=True).groups.items():
+        sid_idx = pd.Index(idx)
+        block = out.loc[sid_idx, [time_col]].copy()
+        block[time_col] = pd.to_numeric(block[time_col], errors="coerce")
+        block = block.dropna(subset=[time_col]).sort_values(time_col)
+
+        if block.empty:
+            continue
+        sorted_idx = block.index
+
+        t = block[time_col].to_numpy(dtype=float)
+        dt = np.diff(t)
+        dt = dt[dt > 0]
+        if dt.size == 0:
+            continue
+
+        dt_med = float(np.median(dt))
+        if not np.isfinite(dt_med) or dt_med <= 0:
+            continue
+
+        fs_hz = 1.0 / dt_med
+        nyquist = 0.5 * fs_hz
+
+        t_min, t_max = float(np.nanmin(t)), float(np.nanmax(t))
+        n_grid = int(np.floor((t_max - t_min) / dt_med)) + 1
+        if n_grid < 8:
+            continue
+        t_grid = np.linspace(t_min, t_max, n_grid)
+
+        for spec in filter_specs:
+            if not spec["cols"]:
+                continue
+
+            b, a = _design_subject_filter(spec, nyquist)
+            if b is None or a is None:
+                continue
+
+            min_points = int(spec["min_points"])
+            if len(t_grid) < min_points:
+                continue
+
+            for col in spec["cols"]:
+                s = pd.to_numeric(out.loc[sorted_idx, col], errors="coerce")
+                valid = s.notna().to_numpy()
+                if int(valid.sum()) < min_points:
+                    continue
+
+                t_valid = t[valid]
+                y_valid = s.to_numpy(dtype=float)[valid]
+                if np.unique(t_valid).size < min_points:
+                    continue
+
+                y_grid = np.interp(t_grid, t_valid, y_valid)
+                padlen = 3 * (max(len(a), len(b)) - 1)
+                if len(y_grid) <= padlen:
+                    continue
+
+                y_filt_grid = filtfilt(b, a, y_grid)
+                y_filt = np.interp(t_valid, t_grid, y_filt_grid)
+
+                target_rows = sorted_idx[valid]
+                out.loc[target_rows, col] = y_filt
+
+    return out
+
+
+def apply_column_aggregations(df, preprocess_profile):
+    """Fusionne plusieurs colonnes en une seule selon une stratégie d'agrégation.
+
+    Permet par exemple de fusionner "Left Pupil Diameter" et "Right Pupil Diameter"
+    en une seule colonne "pupil_diameter_avg" via stratégie "mean".
+
+    Paramètres :
+    df                : DataFrame
+    preprocess_profile: dict de config, avec clé optionnelle 'column_aggregations'
+        Clé attendue : 'column_aggregations' : dict de la forme
+        {
+            "nom_colonne_resultat": {
+                "columns": ["col1", "col2"],
+                "strategy": "mean" | "min" | "max" | "std" | "sum"
+            },
+            ...
+        }
+
+    Retour :
+    DataFrame avec colonnes agrégées ajoutées (colonnes source conservées).
+    Si 'column_aggregations' est absent, retourne df inchangé.
+    """
+    aggregations = preprocess_profile.get("column_aggregations")
+    if aggregations is None or len(aggregations) == 0:
+        return df
+
+    out = df.copy()
+
+    for result_col, spec in aggregations.items():
+        cols_to_merge = spec.get("columns", [])
+        strategy = spec.get("strategy", "mean")
+
+        if len(cols_to_merge) == 0:
+            raise ValueError(f"column_aggregations['{result_col}']: 'columns' est vide.")
+        if len(cols_to_merge) < 2:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: il faut au moins 2 colonnes. "
+                f"Recu: {len(cols_to_merge)}"
+            )
+
+        missing = [c for c in cols_to_merge if c not in out.columns]
+        if missing:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: colonnes absentes: {missing}. "
+                f"Colonnes disponibles: {list(out.columns)}"
+            )
+
+        # Extraire et convertir en numériques
+        subset = out[cols_to_merge].apply(pd.to_numeric, errors="coerce")
+
+        if strategy == "mean":
+            out[result_col] = subset.mean(axis=1)
+        elif strategy == "min":
+            out[result_col] = subset.min(axis=1)
+        elif strategy == "max":
+            out[result_col] = subset.max(axis=1)
+        elif strategy == "std":
+            out[result_col] = subset.std(axis=1)
+        elif strategy == "sum":
+            out[result_col] = subset.sum(axis=1)
+        else:
+            raise ValueError(
+                f"column_aggregations['{result_col}']: stratégie inconnue '{strategy}'. "
+                f"Stratégies supportées: mean, min, max, std, sum"
+            )
+
+    return out
 
 
 def apply_target_discretization(df, target_profile):
@@ -43,6 +316,9 @@ def apply_target_discretization(df, target_profile):
 
 def apply_preprocess(df, preprocess_profile):
     out = df.copy()
+
+    # Agrégation de colonnes si configurée (avant tout autre traitement)
+    out = apply_column_aggregations(out, preprocess_profile)
 
     if "n_valid_features" in out.columns:
         out = out[out["n_valid_features"] >= preprocess_profile.get("min_valid_features", 1)].copy()
@@ -100,6 +376,9 @@ def apply_preprocess(df, preprocess_profile):
         feature_cols = selected
     else:
         raise ValueError("preprocess_profile['include_features'] doit etre 'all' ou une liste de noms de features.")
+
+    # Approche B: filtres temporels optionnels sur la dimension temporelle.
+    out = _apply_temporal_filters(out, feature_cols, preprocess_profile)
 
     return out, feature_cols
 
@@ -185,3 +464,22 @@ def prepare_splits_and_impute(dataset_df, feature_cols, preprocess_profile, mode
         "imputer": imputer,
         "scaler": scaler,
     }
+
+def display_target_info(df, model_profile, target_profile=None, preprocess_profile=None):
+    task = model_profile.get("task_type", "regression")
+    target = df["target"]
+
+    if task == "classification":
+        print("Classes:", sorted(target.dropna().unique().tolist()))
+        print("Distribution:")
+        print(target.value_counts().sort_index())
+    else:
+        print("Distribution cible (regression):")
+        print(target.describe())
+
+    if target_profile and target_profile.get("clip_quantiles"):
+        q_low, q_high = target_profile["clip_quantiles"]
+        print(f"\nClip quantiles cible   : [{q_low}, {q_high}]")
+    if preprocess_profile and preprocess_profile.get("clip_quantiles"):
+        q_low, q_high = preprocess_profile["clip_quantiles"]
+        print(f"Clip quantiles features: [{q_low}, {q_high}]")

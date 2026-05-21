@@ -4,6 +4,10 @@ import numpy as np
 import pandas as pd
 import scipy.io
 
+from pipeline.frequential_resampling import (
+    apply_lomb_scargle_frequency_sampling,
+    apply_uniform_time_step_sampling,
+)
 
 # MAT helpers
 
@@ -60,25 +64,123 @@ def load_mat_matrix(data_profile):
 # CSV features
 
 def load_csv_features(data_profile):
+    """Charge un CSV de features.
+
+    Parametres :
+    data_profile: dict de configuration avec :
+        - 'file_path'      : chemin du CSV (obligatoire)
+        - 'subject_id_col' : nom de la colonne sujet dans le CSV (obligatoire)
+        - 'time_col'       : nom de la colonne de temps en secondes (approche B uniquement,
+                             optionnel). Si presente, elle est renommee 'time' et une colonne
+                             'minute' est derivee via floor(time / 60).
+
+    Retour :
+    DataFrame avec au moins les colonnes 'subject_id' et 'row_id'.
+    Approche B : colonnes supplementaires 'time' et 'minute'.
+    """
     csv_path = data_profile["file_path"]
     if not os.path.exists(csv_path):
         raise FileNotFoundError(f"Fichier CSV introuvable: {csv_path}")
 
     df = pd.read_csv(csv_path)
 
-    sid_col = data_profile.get("subject_id_col", "subject_id")
-    if sid_col in df.columns and sid_col != "subject_id":
+    if "subject_id_col" not in data_profile:
+        raise ValueError("data_profile doit definir explicitement 'subject_id_col'.")
+
+    sid_col = data_profile["subject_id_col"]
+    if sid_col not in df.columns:
+        raise ValueError(
+            f"Colonne subject_id introuvable: '{sid_col}'. Colonnes disponibles: {list(df.columns)}"
+        )
+    if sid_col != "subject_id":
         df = df.rename(columns={sid_col: "subject_id"})
-    elif "subject_id" not in df.columns:
-        if "Sujet" in df.columns:
-            df = df.rename(columns={"Sujet": "subject_id"})
-        else:
-            df["subject_id"] = [f"subject_{i:03d}" for i in range(len(df))]
+
+    df["subject_id"] = df["subject_id"].astype(str).str.strip()
 
     if "row_id" not in df.columns:
         df["row_id"] = np.arange(len(df), dtype=int)
 
+    # Approche B : colonne de temps en secondes → 'time' + 'minute' derivee
+    time_col = data_profile.get("time_col")
+    if time_col is not None:
+        if time_col not in df.columns:
+            raise ValueError(
+                f"Colonne temporelle introuvable: '{time_col}'. Colonnes disponibles: {list(df.columns)}"
+            )
+        if time_col != "time":
+            df = df.rename(columns={time_col: "time"})
+        df["time"] = pd.to_numeric(df["time"], errors="coerce")
+        df = df.dropna(subset=["time"]).copy()
+        df["time"] = df["time"].astype(float)
+
+        if "minute" not in df.columns:
+            df["minute"] = np.floor(df["time"] / 60.0).astype(int)
+
     return df
+
+def load_and_resample_features(data_profile, preprocess_profile=None):
+    """Charge les features brutes et applique le reechantillonnage Lomb-Scargle si configure.
+
+    A utiliser pour l'approche B (series temporelles) avant l'appel a add_target,
+    de sorte que le frequency sampling soit realise sur le signal brut sans
+    perturber la colonne cible.
+
+    Pour l'approche A (indicateurs agrégés), utiliser directement load_csv_features.
+    """
+    df = load_csv_features(data_profile)
+
+    if preprocess_profile is not None and preprocess_profile.get("use_frequency_resampling", False):
+        method = str(preprocess_profile.get("frequency_resampling_method", "lomb_scargle")).strip().lower()
+        if method == "lomb_scargle":
+            if preprocess_profile.get("frequency_sampling_hz") is None:
+                raise ValueError(
+                    "'frequency_sampling_hz' est requis quand frequency_resampling_method='lomb_scargle'."
+                )
+            df = apply_lomb_scargle_frequency_sampling(df, preprocess_profile)
+        elif method == "uniform_time_step":
+            df = apply_uniform_time_step_sampling(df, preprocess_profile)
+        else:
+            raise ValueError(
+                "frequency_resampling_method invalide. Valeurs acceptees: 'lomb_scargle', 'uniform_time_step'."
+            )
+
+    return df
+
+
+def load_features_for_approach(data_profile, preprocess_profile=None, verbose=True):
+    """Charge les features selon l'approche (A/B) et le mode de reechantillonnage.
+
+    Règles :
+    - Approche A : chargement CSV standard
+    - Approche B + use_frequency_resampling=True + frequency_sampling_hz défini :
+      chargement puis reechantillonnage Lomb-Scargle
+    - Approche B sans reechantillonnage : chargement CSV standard en conservant la dimension temporelle
+    """
+    preprocess_profile = preprocess_profile or {}
+    approach = str(preprocess_profile.get("approach", "A")).strip().upper()
+    if approach not in {"A", "B"}:
+        raise ValueError("preprocess_profile['approach'] doit etre 'A' ou 'B'.")
+
+    use_resampling = bool(preprocess_profile.get("use_frequency_resampling", False))
+    method = str(preprocess_profile.get("frequency_resampling_method", "lomb_scargle")).strip().lower()
+    has_sampling = preprocess_profile.get("frequency_sampling_hz") is not None
+
+    if approach == "B":
+        if use_resampling and (method == "uniform_time_step" or has_sampling):
+            if verbose:
+                if method == "uniform_time_step":
+                    print("Approche B activee avec uniformisation du pas temporel sur les donnees brutes.")
+                else:
+                    print("Approche B activee avec frequency sampling (Lomb-Scargle) sur les donnees brutes.")
+            return load_and_resample_features(data_profile, preprocess_profile)
+
+        if verbose:
+            print("Approche B activee sans reechantillonnage: series temporelles brutes conservees.")
+        return load_csv_features(data_profile)
+
+    if verbose:
+        print("Approche A activee: chargement tabulaire standard.")
+    return load_csv_features(data_profile)
 
 
 # Target helpers
@@ -261,7 +363,8 @@ def add_target(features_df, target_profile):
 
     t = _build_target_table(target_df, target_profile)
     merged = features_df.copy()
-    merged["subject_id"] = merged["subject_id"].astype(str)
+    merged["subject_id"] = merged["subject_id"].astype(str).str.strip()
+    t["subject_id"] = t["subject_id"].astype(str).str.strip()
 
     if "minute" in t.columns:
         minute_col = target_profile.get("minute_col", "minute")

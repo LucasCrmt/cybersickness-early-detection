@@ -1,0 +1,19 @@
+# DirectML environment (Windows native, no WSL)
+# Use Python 3.10 for best compatibility with TensorFlow DirectML plugin.
+
+tensorflow-cpu==2.10.1
+tensorflow-directml-plugin==0.2.0.dev221020
+keras==2.10.0
+numpy==1.23.5
+
+pandas>=2.0.0
+scikit-learn>=1.3.0
+scipy>=1.10.0
+matplotlib>=3.8.0
+seaborn>=0.13.2
+jupyter>=1.0.0
+ipython>=8.0.0
+ipykernel>=6.0.0
+xgboost>=1.7.0
+openpyxl>=3.0.0
+plotly>=5.0.0

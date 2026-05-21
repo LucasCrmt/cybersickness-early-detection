@@ -7,29 +7,6 @@ DATA_PROFILE = {
     "source": "csv",  # csv / mat
     "file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMat_2_1.csv",
     "subject_id_col": "Participant",
-    "mat_file_path": r"../data/Indicateurs calculés/FullTimeIndicatorsMinutes1.mat",
-    "mat_variable": "FullTimeIndicatorsMat",
-    "feature_columns": {
-        0: "Time",
-        1: "HMDPosX",
-        2: "HMDPosY",
-        3: "HMDPosZ",
-        4: "RotX",
-        5: "RotY",
-        6: "RotZ",
-        7: "SuggestedRotationX",
-        8: "SuggestedRotationY",
-        9: "SuggestedRotationZ",
-        10: "LeftPupilDiameter",
-        11: "RightPupilDiameter",
-        12: "XGazeDirection",
-        13: "YGazeDirection",
-        14: "Confidence",
-        15: "IsBoat",
-        16: "XWorldPosition",
-        17: "YWorldPosition",
-    },
-    "subject_id_count_hint": 42,
 }
 
 PREPROCESS_PROFILE = {
@@ -38,6 +15,48 @@ PREPROCESS_PROFILE = {
     "drop_low_information_features": True,
     "min_valid_features": 1,
     "normalization": None,  # None / "standard" / "minmax"
+
+    # Approche temporelle (B) : filtres optionnels par sujet
+    # "approach": "B",
+    # "time_col": "time",
+    # "subject_id_col": "subject_id",
+    #
+    # Filtre passe-bas
+    # "apply_temporal_lowpass": True,
+    # "lowpass_cutoff_hz": 0.05,
+    # "lowpass_order": 4,
+    # "lowpass_min_points": 16,
+    # "lowpass_features": "all",  # "all" ou liste de noms
+    #
+    # Filtre passe-haut
+    # "apply_temporal_highpass": False,
+    # "highpass_cutoff_hz": 0.01,
+    # "highpass_order": 4,
+    # "highpass_min_points": 16,
+    # "highpass_features": "all",  # "all" ou liste de noms
+    #
+    # Filtre passe-bande
+    # "apply_temporal_bandpass": False,
+    # "bandpass_low_cutoff_hz": 0.01,
+    # "bandpass_high_cutoff_hz": 0.20,
+    # "bandpass_order": 4,
+    # "bandpass_min_points": 16,
+    # "bandpass_features": "all",  # "all" ou liste de noms
+    
+    # Agrégation de colonnes (optionnel)
+    # Agrégation pairwise: chaque règle fusionne exactement 2 colonnes,
+    # ligne par ligne (pas de moyenne sur une liste de 3+ colonnes).
+    # Exemple : fusionner Left/Right Pupil Diameter en pupil_diameter_avg
+    # "column_aggregations": {
+    #     "pupil_diameter_avg": {
+    #         "columns": ["Left Pupil Diameter", "Right Pupil Diameter"],
+    #         "strategy": "mean"  # mean | min | max | std | sum
+    #     },
+    #     "gaze_xy_std": {
+    #         "columns": ["X gaze direction", "Y gaze direction"],
+    #         "strategy": "std"
+    #     }
+    # },
 }
 
 TARGET_PROFILE = {
@@ -75,7 +94,7 @@ TARGET_PROFILE = {
 
 MODEL_PROFILE = {
     "task_type": "regression",  # classification / regression
-    "model_type": "random_forest",  # random_forest / xgboost
+    "model_type": "random_forest",  # random_forest / xgboost / SVM
     "split_method": "random",  # group / random
     "test_size": 0.20,
     "val_size": 0.20,
@@ -93,12 +112,29 @@ OUTPUT_PROFILE = {
     "save_model_card": True,
     "save_visual_report": True,
     "visual_report_format": "pdf",  # pdf / png / both
+    # "all" pour tout, ou une liste explicite de fonctions
+    "visual_report_functions": [
+        "visual_cover_page",
+        "visual_model_architecture_page",
+        "visual_split_report",
+        "visual_correlation_pages",
+        "visual_violin_pages",
+        "visual_clipping_boxplots",
+        "visual_confusion_matrix", # classification uniquement
+        "visual_metrics_bar",
+        "visual_feature_importance",
+        "visual_pca", # classification uniquement
+    ],
     # Nom du fichier
     "visual_report_name": "visual_report",
     # Nb features par graph
     "max_corr_features": 32,
     "max_violin_features": 48,
     "violin_features_per_page": 9,
+    # FFT temporelle (approche B)
+    "max_fft_features": 12,
+    "fft_features_per_page": 4,
+    "top_n_importance": 20, # nombre de features dans le graphe d'importance
     # Texte libre presente sur la page de garde du rapport visuel (optionnel)
     "hypothesis": (
         """
