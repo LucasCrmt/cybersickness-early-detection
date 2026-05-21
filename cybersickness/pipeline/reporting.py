@@ -1047,6 +1047,9 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
 
     max_fft_features = int(output_profile.get("max_fft_features", 12))
     fft_features_per_page = int(output_profile.get("fft_features_per_page", 4))
+    fft_display_max_hz = float(output_profile.get("fft_display_max_hz", 0.5) or 0.5)
+    if fft_display_max_hz <= 0:
+        fft_display_max_hz = 0.5
     max_fft_features = max(1, max_fft_features)
     fft_features_per_page = max(1, fft_features_per_page)
 
@@ -1083,6 +1086,7 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
                 ax.set_title(feat)
                 ax.set_xlabel("Frequence (Hz)")
                 ax.set_ylabel("Puissance (non normalisee)")
+                ax.set_xlim(0, fft_display_max_hz)
                 continue
 
             if raw_freqs is not None:
@@ -1103,6 +1107,7 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
             ax.set_title(feat)
             ax.set_xlabel("Frequence (Hz)")
             ax.set_ylabel("Puissance (non normalisee)")
+            ax.set_xlim(0, fft_display_max_hz)
             ax.grid(alpha=0.2)
 
             handles, labels = ax.get_legend_handles_labels()
@@ -1155,6 +1160,9 @@ def visual_temporal_preprocess_pages(context, save_figure):
 
     max_features = int(output_profile.get("max_temporal_filtered_features", len(filtered_features)))
     features_per_page = int(output_profile.get("temporal_filtered_features_per_page", 2))
+    fft_display_max_hz = float(output_profile.get("fft_display_max_hz", 0.5) or 0.5)
+    if fft_display_max_hz <= 0:
+        fft_display_max_hz = 0.5
     max_features = max(1, max_features)
     features_per_page = max(1, features_per_page)
     selected_features = filtered_features[:max_features]
@@ -1237,7 +1245,7 @@ def visual_temporal_preprocess_pages(context, save_figure):
             ax_fft.set_title(f"FFT - {feat}")
             ax_fft.set_xlabel("Frequence (Hz)")
             ax_fft.set_ylabel("Puissance (non normalisee)")
-            ax_fft.set_xlim(left=0)
+            ax_fft.set_xlim(0, fft_display_max_hz)
             ax_fft.grid(alpha=0.2)
 
         fig.suptitle(
