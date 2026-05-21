@@ -126,6 +126,152 @@ def _frequency_sample_group_lomb_scargle(group_df, time_col, feature_cols, freq_
     return out
 
 
+def _resolve_uniform_step_seconds(df, time_col, subject_col, preprocess_profile):
+    configured_step = preprocess_profile.get("uniform_time_step_s")
+    if configured_step is not None:
+        step = float(configured_step)
+        if step <= 0:
+            raise ValueError("'uniform_time_step_s' doit etre > 0.")
+        return step
+
+    # Fallback robuste: mediane des deltas positifs sur tous les sujets.
+    deltas = []
+    for _, g in df.groupby(subject_col, sort=False):
+        t = pd.to_numeric(g[time_col], errors="coerce").dropna().sort_values().to_numpy(dtype=float)
+        if t.size < 2:
+            continue
+        dt = np.diff(t)
+        dt = dt[(dt > 0) & np.isfinite(dt)]
+        if dt.size > 0:
+            deltas.append(dt)
+
+    if len(deltas) == 0:
+        raise ValueError(
+            "Impossible d'estimer un pas temporel uniforme: deltas temporels insuffisants. "
+            "Renseigner 'uniform_time_step_s'."
+        )
+
+    all_dt = np.concatenate(deltas)
+    step = float(np.median(all_dt))
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError("Pas temporel uniforme invalide estime depuis les donnees.")
+    return step
+
+
+def _resample_group_uniform_step(group_df, time_col, feature_cols, step_s):
+    if group_df.empty:
+        return group_df.iloc[0:0].copy()
+
+    t = pd.to_numeric(group_df[time_col], errors="coerce").to_numpy(dtype=float)
+    valid_t = np.isfinite(t)
+    if valid_t.sum() < 2:
+        return group_df.iloc[0:0].copy()
+
+    base = group_df.loc[valid_t].copy()
+    t = t[valid_t]
+
+    order = np.argsort(t)
+    t = t[order]
+    base = base.iloc[order].copy()
+
+    uniq_t, uniq_idx = np.unique(t, return_index=True)
+    if uniq_t.size < 2:
+        return group_df.iloc[0:0].copy()
+    base = base.iloc[uniq_idx].copy()
+
+    t_min = float(uniq_t[0])
+    t_max = float(uniq_t[-1])
+    if not np.isfinite(t_min) or not np.isfinite(t_max) or t_max <= t_min:
+        return group_df.iloc[0:0].copy()
+
+    t_grid = np.arange(t_min, t_max + step_s * 0.5, step_s, dtype=float)
+    if t_grid.size < 2:
+        return group_df.iloc[0:0].copy()
+
+    out = pd.DataFrame({time_col: t_grid})
+    for c in feature_cols:
+        y = pd.to_numeric(base[c], errors="coerce").to_numpy(dtype=float)
+        good = np.isfinite(y)
+        if good.sum() < 2:
+            out[c] = np.nan
+            continue
+        out[c] = np.interp(t_grid, uniq_t[good], y[good])
+
+    return out
+
+
+def apply_uniform_time_step_sampling(df, preprocess_profile):
+    """Uniformise le pas temporel via interpolation lineaire sur grille reguliere."""
+    if "time_col" not in preprocess_profile:
+        raise ValueError("preprocess_profile doit definir explicitement 'time_col'.")
+    if "subject_id_col" not in preprocess_profile:
+        raise ValueError("preprocess_profile doit definir explicitement 'subject_id_col'.")
+
+    out = df.copy()
+    time_col = preprocess_profile["time_col"]
+    subject_col = preprocess_profile["subject_id_col"]
+
+    if time_col not in out.columns:
+        raise ValueError(
+            f"Colonne temporelle introuvable: '{time_col}'. Colonnes disponibles: {list(out.columns)}"
+        )
+    if subject_col not in out.columns:
+        raise ValueError(
+            f"Colonne subject_id introuvable: '{subject_col}'. Colonnes disponibles: {list(out.columns)}"
+        )
+
+    time_unit = str(preprocess_profile.get("time_unit", "s")).strip().lower()
+    out[time_col] = _to_seconds(out[time_col], time_unit=time_unit)
+    out = out.dropna(subset=[time_col]).copy()
+
+    reserved = {
+        "target",
+        "subject_id",
+        "Participant",
+        "participant",
+        "row_id",
+        "window_start",
+        "window_end",
+        "minute",
+        time_col,
+        "sampling_hz",
+    }
+    explicit_features = preprocess_profile.get("frequency_feature_cols")
+    if explicit_features is not None:
+        missing = [c for c in explicit_features if c not in out.columns]
+        if missing:
+            raise ValueError(f"Colonnes absentes dans frequency_feature_cols: {missing}")
+        feature_cols = list(explicit_features)
+    else:
+        feature_cols = [c for c in out.columns if c not in reserved and pd.api.types.is_numeric_dtype(out[c])]
+
+    if len(feature_cols) == 0:
+        raise ValueError("Aucune feature numerique disponible pour l'uniformisation du pas temporel.")
+
+    step_s = _resolve_uniform_step_seconds(out, time_col, subject_col, preprocess_profile)
+
+    sampled_frames = []
+    for sid, g in out.groupby(subject_col, sort=False):
+        g_sampled = _resample_group_uniform_step(g.sort_values(time_col), time_col, feature_cols, step_s=step_s)
+        if g_sampled.empty:
+            continue
+        g_sampled[subject_col] = sid
+        g_sampled["sampling_hz"] = 1.0 / float(step_s)
+        sampled_frames.append(g_sampled)
+
+    if len(sampled_frames) == 0:
+        raise ValueError("L'uniformisation du pas temporel n'a produit aucune ligne exploitable.")
+
+    sampled = pd.concat(sampled_frames, ignore_index=True)
+    sampled["minute"] = np.floor(sampled[time_col] / 60.0).astype(int)
+    if subject_col != "subject_id":
+        sampled = sampled.rename(columns={subject_col: "subject_id"})
+    if "row_id" not in sampled.columns:
+        sampled["row_id"] = np.arange(len(sampled), dtype=int)
+
+    return sampled
+
+
 def apply_lomb_scargle_frequency_sampling(df, preprocess_profile):
     """Rééchantillonne chaque sujet sur une grille temporelle régulière.
 

@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import scipy.io
 
-from pipeline.frequential_resampling import apply_lomb_scargle_frequency_sampling
+from pipeline.frequential_resampling import (
+    apply_lomb_scargle_frequency_sampling,
+    apply_uniform_time_step_sampling,
+)
 
 # MAT helpers
 
@@ -126,8 +129,20 @@ def load_and_resample_features(data_profile, preprocess_profile=None):
     """
     df = load_csv_features(data_profile)
 
-    if preprocess_profile is not None and preprocess_profile.get("frequency_sampling_hz") is not None:
-        df = apply_lomb_scargle_frequency_sampling(df, preprocess_profile)
+    if preprocess_profile is not None and preprocess_profile.get("use_frequency_resampling", False):
+        method = str(preprocess_profile.get("frequency_resampling_method", "lomb_scargle")).strip().lower()
+        if method == "lomb_scargle":
+            if preprocess_profile.get("frequency_sampling_hz") is None:
+                raise ValueError(
+                    "'frequency_sampling_hz' est requis quand frequency_resampling_method='lomb_scargle'."
+                )
+            df = apply_lomb_scargle_frequency_sampling(df, preprocess_profile)
+        elif method == "uniform_time_step":
+            df = apply_uniform_time_step_sampling(df, preprocess_profile)
+        else:
+            raise ValueError(
+                "frequency_resampling_method invalide. Valeurs acceptees: 'lomb_scargle', 'uniform_time_step'."
+            )
 
     return df
 
@@ -147,12 +162,16 @@ def load_features_for_approach(data_profile, preprocess_profile=None, verbose=Tr
         raise ValueError("preprocess_profile['approach'] doit etre 'A' ou 'B'.")
 
     use_resampling = bool(preprocess_profile.get("use_frequency_resampling", False))
+    method = str(preprocess_profile.get("frequency_resampling_method", "lomb_scargle")).strip().lower()
     has_sampling = preprocess_profile.get("frequency_sampling_hz") is not None
 
     if approach == "B":
-        if use_resampling and has_sampling:
+        if use_resampling and (method == "uniform_time_step" or has_sampling):
             if verbose:
-                print("Approche B activee avec frequency sampling (Lomb-Scargle) sur les donnees brutes.")
+                if method == "uniform_time_step":
+                    print("Approche B activee avec uniformisation du pas temporel sur les donnees brutes.")
+                else:
+                    print("Approche B activee avec frequency sampling (Lomb-Scargle) sur les donnees brutes.")
             return load_and_resample_features(data_profile, preprocess_profile)
 
         if verbose:
