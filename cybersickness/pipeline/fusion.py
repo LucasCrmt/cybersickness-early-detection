@@ -43,15 +43,30 @@ def _col_indices(stream_cols, feature_cols):
 
 
 def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols, model_profile):
-    """Entraîne un modèle XGBoost par flux via grid search sur le val set.
+    """Entraîne un modèle par flux via grid search sur le val set.
+
+    model_profile peut être :
+    - un dict de profil unique -> appliqué à tous les streams
+    - un dict {stream_name: profil} -> un profil différent par stream
 
     Les stream_models sont entraînés sur train uniquement — leurs prédictions
     sur val serviront à entraîner le méta-modèle sans fuite de données.
 
     Retourne {stream_name: fitted_model}.
     """
-    is_classif = model_profile["task_type"] == "classification"
-    search_space = get_search_space(model_profile["task_type"], model_profile)
+    # Si "task_type" est absent à la racine, model_profile est un dict {stream_name: profil}
+    per_stream = "task_type" not in model_profile
+
+    def _get_profile(stream_name):
+        if per_stream:
+            if stream_name not in model_profile:
+                raise ValueError(
+                    f"[fusion] Aucun model_profile trouvé pour le stream '{stream_name}'. "
+                    f"Clés disponibles : {list(model_profile.keys())}"
+                )
+            return model_profile[stream_name]
+        return model_profile
+
     fitted = {}
 
     for stream_name, stream_cols in stream_map.items():
@@ -59,13 +74,17 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
             print(f"[fusion] Stream '{stream_name}' vide, ignoré.")
             continue
 
+        profile = _get_profile(stream_name)
+        is_classif = profile["task_type"] == "classification"
+        search_space = get_search_space(profile["task_type"], profile)
+
         idx = _col_indices(stream_cols, feature_cols)
         X_tr = X_train[:, idx]
         X_vl = X_val[:, idx]
 
         best_score, best_model = -np.inf, None
         for params in ParameterGrid(search_space):
-            m = build_model(params, model_profile)
+            m = build_model(params, profile)
             m.fit(X_tr, y_train)
             pred = m.predict(X_vl)
             score = (
@@ -79,7 +98,8 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
         fitted[stream_name] = best_model
         label = "F1" if is_classif else "RMSE"
         val = best_score if is_classif else -best_score
-        print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features) — {label} val: {val:.4f}")
+        model_type = profile.get("model_type", "?")
+        print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {val:.4f}")
 
     return fitted
 
