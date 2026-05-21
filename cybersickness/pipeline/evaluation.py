@@ -2,8 +2,10 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import time
 
 from sklearn.decomposition import PCA
+from sklearn.model_selection import ParameterGrid
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -15,6 +17,8 @@ from sklearn.metrics import (
     r2_score,
     recall_score,
 )
+
+from pipeline.models import build_model, get_search_space
 
 
 def evaluate_test_set(
@@ -148,6 +152,125 @@ def evaluate_robustness(final_model, X_test_imp, y_test, model_profile, eval_pro
         plt.show()
 
     return noise_scores
+
+
+def train_with_optional_hyperparameter_search(
+    X_train_imp,
+    y_train,
+    X_val_imp,
+    y_val,
+    model_profile,
+    approach=None,
+    sequence_length=None,
+    n_features=None,
+    verbose=True,
+):
+    """Entraîne un modèle avec ou sans recherche d'hyperparamètres.
+
+    - Si `use_hyperparam_search` est True, lance une recherche sur la grille
+      appropriée au `model_type`.
+    - Si `use_hyperparam_search` est False, entraîne directement le modèle avec
+      ses valeurs par défaut.
+
+    Le paramètre `approach` est accepté pour contextualiser l'appel (A/B), sans
+    changer la logique de sélection des hyperparamètres.
+
+    Retourne:
+        final_model, best_params, results_df
+    """
+    _ = approach  # Conservé pour rendre l'appel explicite côté notebook.
+
+    use_search = bool(model_profile.get("use_hyperparam_search", True))
+    is_classification = model_profile["task_type"] == "classification"
+    model_type = str(model_profile.get("model_type", "random_forest")).lower()
+
+    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"} and (sequence_length is None or n_features is None):
+        raise ValueError("sequence_length et n_features sont requis pour les modeles temporels deep.")
+
+    if use_search:
+        search_space = get_search_space(model_profile["task_type"], model_profile=model_profile)
+        grid = list(ParameterGrid(search_space))
+        total_trials = len(grid)
+
+        if verbose:
+            print(f"Debut recherche hyperparametres: {total_trials} combinaisons")
+
+        rows = []
+        best_score = -np.inf
+        best_params = None
+        t0 = time.time()
+
+        for i, params in enumerate(grid, start=1):
+            params = dict(params)
+            if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+                params["sequence_length"] = int(sequence_length)
+                params["n_features"] = int(n_features)
+
+            elapsed = time.time() - t0
+            avg_per_trial = elapsed / max(i - 1, 1)
+            eta = avg_per_trial * (total_trials - i + 1) if i > 1 else float("nan")
+
+            if verbose:
+                print(
+                    f"[{i}/{total_trials}] "
+                    f"elapsed={elapsed/60:.1f} min / "
+                    f"eta={eta/60:.1f} min / "
+                    f"params={params}"
+                )
+
+            model = build_model(params, model_profile)
+            model.fit(X_train_imp, y_train)
+            pred_val = model.predict(X_val_imp)
+
+            row = dict(params)
+            if is_classification:
+                row["val_accuracy"] = accuracy_score(y_val, pred_val)
+                row["val_f1_weighted"] = f1_score(y_val, pred_val, average="weighted", zero_division=0)
+                score = row["val_f1_weighted"]
+                metric_name = "val_f1_weighted"
+            else:
+                rmse = float(np.sqrt(mean_squared_error(y_val, pred_val)))
+                row["val_rmse"] = rmse
+                row["val_r2"] = r2_score(y_val, pred_val)
+                score = -rmse
+                metric_name = "val_rmse (min)"
+
+            rows.append(row)
+
+            if score > best_score:
+                best_score = score
+                best_params = dict(params)
+                if verbose:
+                    print(f"    Nouveau meilleur score -> {metric_name}: {score:.4f}")
+            elif verbose:
+                print(f"    Score courant -> {metric_name}: {score:.4f}")
+
+        results_df = pd.DataFrame(rows)
+        sort_col = "val_f1_weighted" if is_classification else "val_rmse"
+        ascending = not is_classification
+        results_df = results_df.sort_values(by=sort_col, ascending=ascending).reset_index(drop=True)
+        final_params = dict(best_params or {})
+        if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+            final_params["sequence_length"] = int(sequence_length)
+            final_params["n_features"] = int(n_features)
+
+        final_model = build_model(final_params, model_profile)
+        final_model.fit(np.vstack([X_train_imp, X_val_imp]), np.concatenate([y_train, y_val]))
+        return final_model, best_params, results_df
+
+    if verbose:
+        print("Recherche hyperparametres desactivee: utilisation des valeurs par defaut.")
+
+    params = {}
+    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+        params["sequence_length"] = int(sequence_length)
+        params["n_features"] = int(n_features)
+
+    final_model = build_model(params, model_profile)
+    final_model.fit(np.vstack([X_train_imp, X_val_imp]), np.concatenate([y_train, y_val]))
+
+    results_df = pd.DataFrame([{"mode": "default_parameters_used"}])
+    return final_model, params, results_df
 
 
 def plot_feature_importance(final_model, feature_cols, top_n=15, model_profile=None):
