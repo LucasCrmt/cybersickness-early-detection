@@ -68,13 +68,22 @@ def _resolve_temporal_filter_specs(feature_cols, preprocess_profile):
         )
 
     if bool(preprocess_profile.get("apply_temporal_bandpass", False)):
+        bandpass_ranges = preprocess_profile.get("bandpass_ranges_hz")
+        if bandpass_ranges is None:
+            # Compatibilite ascendante: une seule bande definie par low/high.
+            bandpass_ranges = [
+                [
+                    float(preprocess_profile.get("bandpass_low_cutoff_hz", 0.01)),
+                    float(preprocess_profile.get("bandpass_high_cutoff_hz", 0.2)),
+                ]
+            ]
+
         specs.append(
             {
                 "name": "bandpass",
                 "btype": "bandpass",
                 "order": int(preprocess_profile.get("bandpass_order", 4)),
-                "low_cutoff_hz": float(preprocess_profile.get("bandpass_low_cutoff_hz", 0.01)),
-                "high_cutoff_hz": float(preprocess_profile.get("bandpass_high_cutoff_hz", 0.2)),
+                "bands_hz": bandpass_ranges,
                 "min_points": int(preprocess_profile.get("bandpass_min_points", 16)),
                 "cols": _resolve_filter_features(feature_cols, preprocess_profile, "bandpass_features"),
             }
@@ -103,8 +112,18 @@ def _design_subject_filter(spec, nyquist):
                 return None, None
         wn = cutoff_hz / nyquist
     elif btype == "bandpass":
-        low_cut = float(spec["low_cutoff_hz"])
-        high_cut = float(spec["high_cutoff_hz"])
+        bands_hz = spec.get("bands_hz")
+        if not isinstance(bands_hz, (list, tuple)) or len(bands_hz) == 0:
+            raise ValueError("preprocess_profile['bandpass_ranges_hz'] doit contenir au moins une bande [low, high].")
+
+        # Cas historique: un seul design de filtre si une unique bande est fournie.
+        # Le cas multi-bandes est gere dans _apply_temporal_filters.
+        first_band = bands_hz[0]
+        if not isinstance(first_band, (list, tuple)) or len(first_band) != 2:
+            raise ValueError("Chaque bande de bandpass_ranges_hz doit etre une paire [low_cutoff_hz, high_cutoff_hz].")
+
+        low_cut = float(first_band[0])
+        high_cut = float(first_band[1])
         if low_cut <= 0 or high_cut <= 0:
             raise ValueError("Les cutoffs bandpass doivent etre > 0.")
         high_cut = min(high_cut, eps)
@@ -115,6 +134,38 @@ def _design_subject_filter(spec, nyquist):
         raise ValueError(f"Type de filtre non supporte: {btype}")
 
     return butter(order, wn, btype=btype, analog=False)
+
+
+def _design_bandpass_filters(spec, nyquist):
+    """Construit une liste de filtres passe-bande valides a sommer pour un filtrage multi-bandes."""
+    order = int(spec.get("order", 4))
+    if order < 1:
+        raise ValueError(f"preprocess_profile ordre invalide pour {spec.get('name')}: {order}.")
+
+    bands_hz = spec.get("bands_hz")
+    if not isinstance(bands_hz, (list, tuple)) or len(bands_hz) == 0:
+        raise ValueError("preprocess_profile['bandpass_ranges_hz'] doit contenir au moins une bande [low, high].")
+
+    eps = 0.95 * nyquist
+    filters = []
+    for band in bands_hz:
+        if not isinstance(band, (list, tuple)) or len(band) != 2:
+            raise ValueError("Chaque bande de bandpass_ranges_hz doit etre une paire [low_cutoff_hz, high_cutoff_hz].")
+
+        low_cut = float(band[0])
+        high_cut = float(band[1])
+        if low_cut <= 0 or high_cut <= 0:
+            raise ValueError("Les cutoffs bandpass doivent etre > 0.")
+
+        high_cut = min(high_cut, eps)
+        if not (low_cut < high_cut):
+            # Ignore les bandes invalides plutot que bloquer tout le sujet.
+            continue
+
+        wn = [low_cut / nyquist, high_cut / nyquist]
+        filters.append(butter(order, wn, btype="bandpass", analog=False))
+
+    return filters
 
 
 def _apply_temporal_filters(df, feature_cols, preprocess_profile):
@@ -177,9 +228,15 @@ def _apply_temporal_filters(df, feature_cols, preprocess_profile):
             if not spec["cols"]:
                 continue
 
-            b, a = _design_subject_filter(spec, nyquist)
-            if b is None or a is None:
-                continue
+            if spec["btype"] == "bandpass":
+                bandpass_filters = _design_bandpass_filters(spec, nyquist)
+                if len(bandpass_filters) == 0:
+                    continue
+                b = a = None
+            else:
+                b, a = _design_subject_filter(spec, nyquist)
+                if b is None or a is None:
+                    continue
 
             min_points = int(spec["min_points"])
             if len(t_grid) < min_points:
@@ -197,11 +254,23 @@ def _apply_temporal_filters(df, feature_cols, preprocess_profile):
                     continue
 
                 y_grid = np.interp(t_grid, t_valid, y_valid)
-                padlen = 3 * (max(len(a), len(b)) - 1)
-                if len(y_grid) <= padlen:
-                    continue
+                if spec["btype"] == "bandpass":
+                    y_filt_grid = np.zeros_like(y_grid)
+                    applied = False
+                    for b_bp, a_bp in bandpass_filters:
+                        bp_padlen = 3 * (max(len(a_bp), len(b_bp)) - 1)
+                        if len(y_grid) <= bp_padlen:
+                            continue
+                        y_filt_grid += filtfilt(b_bp, a_bp, y_grid)
+                        applied = True
+                    if not applied:
+                        continue
+                else:
+                    padlen = 3 * (max(len(a), len(b)) - 1)
+                    if len(y_grid) <= padlen:
+                        continue
+                    y_filt_grid = filtfilt(b, a, y_grid)
 
-                y_filt_grid = filtfilt(b, a, y_grid)
                 y_filt = np.interp(t_valid, t_grid, y_filt_grid)
 
                 target_rows = sorted_idx[valid]
