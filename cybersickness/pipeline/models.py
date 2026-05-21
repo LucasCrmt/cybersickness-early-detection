@@ -6,6 +6,8 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_score
 from sklearn.model_selection import ParameterGrid
+from sklearn.preprocessing import LabelEncoder
+from sklearn.svm import SVC, SVR
 from xgboost import XGBClassifier, XGBRegressor
 
 try:
@@ -20,6 +22,37 @@ except ImportError:
     TF_AVAILABLE = False
 
 _VALID_MODEL_TYPES = {"random_forest", "xgboost", "cnn_1d", "inception_time", "bilstm", "cnn_lstm"}
+
+
+class _XGBClassifierWrapper:
+    """XGBClassifier avec encodage automatique des labels string → int.
+
+    XGBoost n'accepte que des labels numériques en classification.
+    Ce wrapper encode y à l'entraînement et décode les prédictions,
+    rendant le modèle transparent pour le reste de la pipeline.
+    """
+
+    def __init__(self, **kwargs):
+        self._model = XGBClassifier(**kwargs)
+        self._le = LabelEncoder()
+
+    def fit(self, X, y):
+        self._model.fit(X, self._le.fit_transform(y))
+        return self
+
+    def predict(self, X):
+        return self._le.inverse_transform(self._model.predict(X))
+
+    def predict_proba(self, X):
+        return self._model.predict_proba(X)
+
+    @property
+    def classes_(self):
+        return self._le.classes_
+
+    @property
+    def feature_importances_(self):
+        return self._model.feature_importances_
 
 
 def _get_model_type(model_profile):
@@ -93,6 +126,15 @@ def get_search_space(task_type, model_profile=None):
     
     # Par défaut, random_forest
     return {
+    if mt == "svm":
+        return {
+            "C": [0.1, 1, 10, 100],
+            "kernel": ["rbf", "linear"],
+            "gamma": ["scale", "auto"],
+        }
+
+    # random_forest
+    common = {
         "n_estimators": [200, 500],
         "max_depth": [None, 10, 20],
         "min_samples_split": [2, 5],
@@ -260,7 +302,7 @@ def build_model(params, model_profile):
 
     if mt == "xgboost":
         if is_classif:
-            return XGBClassifier(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
+            return _XGBClassifierWrapper(random_state=model_profile["random_state"], n_jobs=-1, eval_metric="logloss", **params)
         return XGBRegressor(random_state=model_profile["random_state"], n_jobs=-1, **params)
     
     if mt == "random_forest":
@@ -308,6 +350,13 @@ def build_model(params, model_profile):
     
     raise ValueError(f"Type de modèle non reconnu: {mt}")
     
+
+    if mt == "svm":
+        class_weight = model_profile.get("class_weight", None) if is_classif else None
+        if is_classif:
+            return SVC(class_weight=class_weight, **params)
+        return SVR(**params)
+
 
 
 def run_hyperparam_search(X_train_imp, y_train, X_val_imp, y_val, model_profile):

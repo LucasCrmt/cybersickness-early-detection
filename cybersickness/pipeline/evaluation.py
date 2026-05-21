@@ -282,7 +282,7 @@ def plot_feature_importance(final_model, feature_cols, top_n=15, model_profile=N
     )
 
     _mt = (model_profile or {}).get("model_type", "random_forest").lower()
-    _title = "XGBoost" if _mt == "xgboost" else "RandomForest"
+    _title = {"xgboost": "XGBoost", "svm": "SVM"}.get(_mt, "RandomForest")
 
     plt.figure(figsize=(10, 7))
     sns.barplot(data=imp_df.head(top_n), x="importance", y="feature", orient="h")
