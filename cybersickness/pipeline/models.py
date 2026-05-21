@@ -124,8 +124,6 @@ def get_search_space(task_type, model_profile=None):
             "batch_size": [16, 32],
         }
     
-    # Par défaut, random_forest
-    return {
     if mt == "svm":
         return {
             "C": [0.1, 1, 10, 100],
@@ -133,7 +131,7 @@ def get_search_space(task_type, model_profile=None):
             "gamma": ["scale", "auto"],
         }
 
-    # random_forest
+    # par défaut, random_forest
     common = {
         "n_estimators": [200, 500],
         "max_depth": [None, 10, 20],
