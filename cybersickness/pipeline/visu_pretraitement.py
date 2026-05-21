@@ -230,6 +230,40 @@ def _collect_temporal_feature_columns(df, feature_cols, time_col):
     ]
 
 
+def _resolve_temporal_filtered_features(feature_cols, preprocess_profile):
+    if not feature_cols:
+        return []
+
+    available_map = {str(c).strip().lower(): c for c in feature_cols}
+    selected = []
+    seen = set()
+
+    for prefix in ("lowpass", "highpass", "bandpass"):
+        if not bool(preprocess_profile.get(f"apply_temporal_{prefix}", False)):
+            continue
+
+        conf = preprocess_profile.get(f"{prefix}_features", "all")
+        if isinstance(conf, str):
+            if conf.strip().lower() != "all":
+                continue
+            candidates = list(feature_cols)
+        elif isinstance(conf, (list, tuple, set)):
+            candidates = []
+            for raw_name in conf:
+                key = str(raw_name).strip().lower()
+                if key in available_map:
+                    candidates.append(available_map[key])
+        else:
+            continue
+
+        for col in candidates:
+            if col not in seen:
+                selected.append(col)
+                seen.add(col)
+
+    return selected
+
+
 def _temporal_subject_stats(df, time_col):
     if df.empty:
         return pd.DataFrame(columns=["subject_id", "n_samples", "duration_s", "median_dt_s"])
@@ -254,7 +288,7 @@ def _temporal_subject_stats(df, time_col):
 
 
 def _compute_subject_fft_spectrum(df, subject_id, time_col, feature_cols, max_points=4096):
-    """Calcule un spectre de puissance moyen (FFT) pour un sujet et un ensemble de features."""
+    """Calcule un spectre de puissance moyen (FFT) non normalise pour un sujet et un ensemble de features."""
     sub = df[df["subject_id"].astype(str) == str(subject_id)].copy()
     if sub.empty:
         return None, None
@@ -318,11 +352,9 @@ def _compute_subject_fft_spectrum(df, subject_id, time_col, feature_cols, max_po
         if len(power) == 0:
             continue
 
-        # Ignore la composante continue pour comparer la dynamique fréquentielle.
+        # Ignore la composante continue pour comparer la dynamique frequentielle.
         if len(power) > 1:
             power[0] = 0.0
-        if np.max(power) > 0:
-            power = power / np.max(power)
 
         if freq_axis is None:
             freq_axis = freqs
@@ -343,6 +375,31 @@ def _compute_subject_fft_spectrum(df, subject_id, time_col, feature_cols, max_po
         return None, None
 
     return freq_axis[valid], avg_spec[valid]
+
+
+def _temporal_fft_cutoff_markers(preprocess_profile):
+    profile = preprocess_profile or {}
+    markers = []
+
+    if bool(profile.get("apply_temporal_lowpass", False)):
+        cutoff = float(profile.get("lowpass_cutoff_hz", 0.0) or 0.0)
+        if cutoff > 0:
+            markers.append(("LP", cutoff, "#2A9D8F", "--"))
+
+    if bool(profile.get("apply_temporal_highpass", False)):
+        cutoff = float(profile.get("highpass_cutoff_hz", 0.0) or 0.0)
+        if cutoff > 0:
+            markers.append(("HP", cutoff, "#E76F51", "--"))
+
+    if bool(profile.get("apply_temporal_bandpass", False)):
+        low_cut = float(profile.get("bandpass_low_cutoff_hz", 0.0) or 0.0)
+        high_cut = float(profile.get("bandpass_high_cutoff_hz", 0.0) or 0.0)
+        if low_cut > 0:
+            markers.append(("BP low", low_cut, "#8E6C8A", ":"))
+        if high_cut > 0:
+            markers.append(("BP high", high_cut, "#8E6C8A", ":"))
+
+    return markers
 
 
 def plot_temporal_preprocessing_report(
@@ -457,38 +514,87 @@ def plot_temporal_preprocessing_report(
     plt.tight_layout()
     plt.show()
 
-    # Figure complementaire: comparaison frequencielle (FFT) raw vs preprocessed.
-    raw_freqs, raw_power = _compute_subject_fft_spectrum(
-        raw_df,
-        subject_id=top_subject,
-        time_col=time_col,
-        feature_cols=chosen_features,
-    )
-    proc_freqs, proc_power = _compute_subject_fft_spectrum(
-        processed_df,
-        subject_id=top_subject,
-        time_col=time_col,
-        feature_cols=chosen_features,
-    )
-
-    if raw_freqs is None and proc_freqs is None:
-        print("FFT non tracee: donnees insuffisantes pour estimer un spectre frequenciel fiable.")
+    # Figure(s) complementaire(s): comparaison frequencielle (FFT) raw vs preprocessed,
+    # pour chaque feature effectivement filtree.
+    filtered_features = _resolve_temporal_filtered_features(feature_candidates, preprocess_profile)
+    if not filtered_features:
+        print("FFT non tracee: aucune feature filtree active dans preprocess_profile.")
         return
 
-    plt.figure(figsize=(12, 4.5))
-    if raw_freqs is not None:
-        plt.plot(raw_freqs, raw_power, label="Raw", color="#4C72B0", linewidth=2, alpha=0.9)
-    if proc_freqs is not None:
-        plt.plot(proc_freqs, proc_power, label="Preprocessed", color="#55A868", linewidth=2, alpha=0.9)
+    cutoff_markers = _temporal_fft_cutoff_markers(preprocess_profile)
+    fft_features_per_page = 4
+    n_pages = int(np.ceil(len(filtered_features) / float(fft_features_per_page)))
 
-    plt.title(f"Comparaison FFT - sujet {top_subject} (spectre moyen normalise)")
-    plt.xlabel("Frequence (Hz)")
-    plt.ylabel("Puissance normalisee")
-    plt.xlim(left=0)
-    plt.grid(alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    for page_idx in range(n_pages):
+        chunk = filtered_features[page_idx * fft_features_per_page:(page_idx + 1) * fft_features_per_page]
+        if not chunk:
+            continue
+
+        n_cols = 2
+        n_rows = int(np.ceil(len(chunk) / float(n_cols)))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 4.2 * n_rows))
+        axes = np.atleast_1d(axes).flatten()
+
+        for i, feat in enumerate(chunk):
+            ax = axes[i]
+            raw_freqs, raw_power = _compute_subject_fft_spectrum(
+                raw_df,
+                subject_id=top_subject,
+                time_col=time_col,
+                feature_cols=[feat],
+            )
+            proc_freqs, proc_power = _compute_subject_fft_spectrum(
+                processed_df,
+                subject_id=top_subject,
+                time_col=time_col,
+                feature_cols=[feat],
+            )
+
+            if raw_freqs is None and proc_freqs is None:
+                ax.text(0.5, 0.5, "Donnees insuffisantes", ha="center", va="center", transform=ax.transAxes)
+                ax.set_title(feat)
+                ax.set_xlabel("Frequence (Hz)")
+                ax.set_ylabel("Puissance (non normalisee)")
+                continue
+
+            if raw_freqs is not None:
+                ax.plot(raw_freqs, raw_power, label="Avant", color="#4C72B0", linewidth=1.8, alpha=0.9)
+            if proc_freqs is not None:
+                ax.plot(proc_freqs, proc_power, label="Apres", color="#55A868", linewidth=1.8, alpha=0.9)
+
+            max_freq = 0.0
+            if raw_freqs is not None and len(raw_freqs) > 0:
+                max_freq = max(max_freq, float(np.nanmax(raw_freqs)))
+            if proc_freqs is not None and len(proc_freqs) > 0:
+                max_freq = max(max_freq, float(np.nanmax(proc_freqs)))
+
+            for marker_name, cutoff_hz, color, style in cutoff_markers:
+                if max_freq > 0 and cutoff_hz <= max_freq:
+                    ax.axvline(cutoff_hz, color=color, linestyle=style, linewidth=1.1, alpha=0.9, label=marker_name)
+
+            ax.set_title(feat)
+            ax.set_xlabel("Frequence (Hz)")
+            ax.set_ylabel("Puissance (non normalisee)")
+            ax.set_xlim(left=0)
+            ax.grid(alpha=0.2)
+
+            handles, labels = ax.get_legend_handles_labels()
+            dedup = {}
+            for h, l in zip(handles, labels):
+                if l not in dedup:
+                    dedup[l] = h
+            ax.legend(dedup.values(), dedup.keys(), fontsize=8, loc="best")
+
+        for i in range(len(chunk), len(axes)):
+            axes[i].set_visible(False)
+
+        fig.suptitle(
+            f"FFT par feature filtree - sujet {top_subject} (page {page_idx + 1}/{n_pages})",
+            fontsize=12,
+            fontweight="bold",
+        )
+        fig.tight_layout()
+        plt.show()
 
 
 def plot_preprocessing_report_by_approach(
