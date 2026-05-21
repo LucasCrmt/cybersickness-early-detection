@@ -15,6 +15,33 @@ PREPROCESS_PROFILE = {
     "drop_low_information_features": True,
     "min_valid_features": 1,
     "normalization": None,  # None / "standard" / "minmax"
+
+    # Approche temporelle (B) : filtres optionnels par sujet
+    # "approach": "B",
+    # "time_col": "time",
+    # "subject_id_col": "subject_id",
+    #
+    # Filtre passe-bas
+    # "apply_temporal_lowpass": True,
+    # "lowpass_cutoff_hz": 0.05,
+    # "lowpass_order": 4,
+    # "lowpass_min_points": 16,
+    # "lowpass_features": "all",  # "all" ou liste de noms
+    #
+    # Filtre passe-haut
+    # "apply_temporal_highpass": False,
+    # "highpass_cutoff_hz": 0.01,
+    # "highpass_order": 4,
+    # "highpass_min_points": 16,
+    # "highpass_features": "all",  # "all" ou liste de noms
+    #
+    # Filtre passe-bande
+    # "apply_temporal_bandpass": False,
+    # "bandpass_low_cutoff_hz": 0.01,
+    # "bandpass_high_cutoff_hz": 0.20,
+    # "bandpass_order": 4,
+    # "bandpass_min_points": 16,
+    # "bandpass_features": "all",  # "all" ou liste de noms
     
     # Agrégation de colonnes (optionnel)
     # Agrégation pairwise: chaque règle fusionne exactement 2 colonnes,
@@ -104,6 +131,9 @@ OUTPUT_PROFILE = {
     "max_corr_features": 32,
     "max_violin_features": 48,
     "violin_features_per_page": 9,
+    # FFT temporelle (approche B)
+    "max_fft_features": 12,
+    "fft_features_per_page": 4,
     "top_n_importance": 20, # nombre de features dans le graphe d'importance
     # Texte libre presente sur la page de garde du rapport visuel (optionnel)
     "hypothesis": (
