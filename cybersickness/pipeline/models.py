@@ -108,7 +108,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "bilstm":
         return {
-            "units": [32, 64],
+            "units": [4, 8],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.01],
             "batch_size": [16, 32],
@@ -209,10 +209,27 @@ def _build_bilstm(input_shape, output_shape, is_classif, params):
     
     units = params.get("units", 32)
     dropout_rate = params.get("dropout_rate", 0.2)
+    # recurrent_dropout > 0 force une implementation LSTM non-CuDNN,
+    # necessaire pour eviter l'op CudnnRNN indisponible sous DirectML.
+    recurrent_dropout_rate = params.get("recurrent_dropout", 0.1)
     
     model = Sequential([
-        Bidirectional(LSTM(units, return_sequences=True, dropout=dropout_rate), input_shape=input_shape),
-        Bidirectional(LSTM(units, dropout=dropout_rate)),
+        Bidirectional(
+            LSTM(
+                units,
+                return_sequences=True,
+                dropout=dropout_rate,
+                recurrent_dropout=recurrent_dropout_rate,
+            ),
+            input_shape=input_shape,
+        ),
+        Bidirectional(
+            LSTM(
+                units,
+                dropout=dropout_rate,
+                recurrent_dropout=recurrent_dropout_rate,
+            )
+        ),
         Dense(64, activation='relu'),
         Dropout(dropout_rate),
         Dense(output_shape, activation='softmax' if is_classif else 'linear')
@@ -229,6 +246,9 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
     cnn_kernel = params.get("cnn_kernel", 3)
     lstm_units = params.get("lstm_units", 32)
     dropout_rate = params.get("dropout_rate", 0.2)
+    # recurrent_dropout > 0 force une implementation LSTM non-CuDNN,
+    # necessaire pour eviter l'op CudnnRNN indisponible sous DirectML.
+    recurrent_dropout_rate = params.get("recurrent_dropout", 0.1)
     
     model = Sequential([
         Conv1D(cnn_filters, cnn_kernel, activation='relu', input_shape=input_shape),
@@ -237,7 +257,12 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
         Conv1D(cnn_filters * 2, cnn_kernel, activation='relu'),
         BatchNormalization(),
         Dropout(dropout_rate),
-        LSTM(lstm_units, return_sequences=False, dropout=dropout_rate),
+        LSTM(
+            lstm_units,
+            return_sequences=False,
+            dropout=dropout_rate,
+            recurrent_dropout=recurrent_dropout_rate,
+        ),
         Dense(64, activation='relu'),
         Dropout(dropout_rate),
         Dense(output_shape, activation='softmax' if is_classif else 'linear')
