@@ -125,7 +125,6 @@ def get_search_space(task_type, model_profile=None):
         }
     
     # Par défaut, random_forest
-    return {
     if mt == "svm":
         return {
             "C": [0.1, 1, 10, 100],
@@ -294,6 +293,10 @@ class KerasSklearnWrapper:
                 return np.asarray([self.classes_[int(i)] for i in pred_idx], dtype=object)
             return pred_idx
         return predictions.flatten()
+
+    def predict_proba(self, X):
+        """Retourne les probabilités softmax par classe."""
+        return self.model.predict(X, verbose=0)
 
 
 def build_model(params, model_profile):
