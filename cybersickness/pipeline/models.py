@@ -293,6 +293,10 @@ class KerasSklearnWrapper:
             return pred_idx
         return predictions.flatten()
 
+    def predict_proba(self, X):
+        """Retourne les probabilités softmax par classe."""
+        return self.model.predict(X, verbose=0)
+
 
 def build_model(params, model_profile):
     mt = _get_model_type(model_profile)

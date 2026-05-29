@@ -7,6 +7,29 @@ from sklearn.model_selection import ParameterGrid
 
 from .models import _XGBClassifierWrapper, build_model, get_search_space
 
+_DEEP_MODEL_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}
+
+
+def _resolve_stream_profile(model_profile, stream_name):
+    """Retourne le profil du flux si STREAM_PROFILES est fourni, sinon le profil global."""
+    if (
+        isinstance(model_profile, dict)
+        and stream_name in model_profile
+        and isinstance(model_profile.get(stream_name), dict)
+        and "task_type" in model_profile.get(stream_name, {})
+    ):
+        return model_profile[stream_name]
+    return model_profile
+
+
+def _get_base_profile(model_profile):
+    """Extrait un profil de base pour les paramètres communs (task_type, etc.)."""
+    if isinstance(model_profile, dict):
+        for v in model_profile.values():
+            if isinstance(v, dict) and "task_type" in v:
+                return v
+    return model_profile
+
 
 def split_feature_streams(feature_cols, fusion_profile):
     """Répartit feature_cols dans des flux par nom de colonne exact.
@@ -43,15 +66,19 @@ def _col_indices(stream_cols, feature_cols):
 
 
 def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols, model_profile):
-    """Entraîne un modèle XGBoost par flux via grid search sur le val set.
+    """Entraîne un modèle par flux via grid search sur le val set.
+
+    model_profile peut être :
+    - un dict unique : même profil pour tous les flux
+    - un dict de profils {stream_name: profile} : profil différent par flux (STREAM_PROFILES)
 
     Les stream_models sont entraînés sur train uniquement — leurs prédictions
     sur val serviront à entraîner le méta-modèle sans fuite de données.
 
     Retourne {stream_name: fitted_model}.
     """
-    is_classif = model_profile["task_type"] == "classification"
-    search_space = get_search_space(model_profile["task_type"], model_profile)
+    base_profile = _get_base_profile(model_profile)
+    is_classif = base_profile["task_type"] == "classification"
     fitted = {}
 
     for stream_name, stream_cols in stream_map.items():
@@ -59,27 +86,54 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
             print(f"[fusion] Stream '{stream_name}' vide, ignoré.")
             continue
 
+        stream_profile = _resolve_stream_profile(model_profile, stream_name)
+        search_space = get_search_space(stream_profile["task_type"], stream_profile)
+
         idx = _col_indices(stream_cols, feature_cols)
         X_tr = X_train[:, idx]
         X_vl = X_val[:, idx]
 
-        best_score, best_model = -np.inf, None
-        for params in ParameterGrid(search_space):
-            m = build_model(params, model_profile)
-            m.fit(X_tr, y_train)
-            pred = m.predict(X_vl)
+        model_type = stream_profile.get("model_type", "random_forest")
+
+        if model_type in _DEEP_MODEL_TYPES:
+            seq_len = X_tr.shape[1]
+            X_tr_d = X_tr.reshape(-1, seq_len, 1)
+            X_vl_d = X_vl.reshape(-1, seq_len, 1)
+            deep_profile = {
+                **stream_profile,
+                "sequence_length": seq_len,
+                "n_features": 1,
+                "n_classes": int(len(set(y_train))) if is_classif else 1,
+            }
+            m = build_model({"sequence_length": seq_len, "n_features": 1}, deep_profile)
+            m.fit(X_tr_d, y_train)
+            pred = m.predict(X_vl_d)
             score = (
                 f1_score(y_val, pred, average="weighted", zero_division=0)
                 if is_classif
                 else -float(np.sqrt(mean_squared_error(y_val, pred)))
             )
-            if score > best_score:
-                best_score, best_model = score, deepcopy(m)
+            fitted[stream_name] = m
+            label = "F1" if is_classif else "RMSE"
+            print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {score:.4f}")
+        else:
+            best_score, best_model = -np.inf, None
+            for params in ParameterGrid(search_space):
+                m = build_model(params, stream_profile)
+                m.fit(X_tr, y_train)
+                pred = m.predict(X_vl)
+                score = (
+                    f1_score(y_val, pred, average="weighted", zero_division=0)
+                    if is_classif
+                    else -float(np.sqrt(mean_squared_error(y_val, pred)))
+                )
+                if score > best_score:
+                    best_score, best_model = score, deepcopy(m)
 
-        fitted[stream_name] = best_model
-        label = "F1" if is_classif else "RMSE"
-        val = best_score if is_classif else -best_score
-        print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features) — {label} val: {val:.4f}")
+            fitted[stream_name] = best_model
+            label = "F1" if is_classif else "RMSE"
+            val = best_score if is_classif else -best_score
+            print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {val:.4f}")
 
     return fitted
 
@@ -94,6 +148,8 @@ def make_meta_features(stream_models, stream_map, X, feature_cols, is_classifica
     for stream_name, model in stream_models.items():
         idx = _col_indices(stream_map[stream_name], feature_cols)
         X_s = X[:, idx]
+        if hasattr(model, "input_shape"):
+            X_s = X_s.reshape(-1, X_s.shape[1], 1)
         if is_classification and hasattr(model, "predict_proba"):
             parts.append(model.predict_proba(X_s))
         else:
