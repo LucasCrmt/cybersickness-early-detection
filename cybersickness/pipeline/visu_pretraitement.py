@@ -522,6 +522,9 @@ def plot_temporal_preprocessing_report(
         return
 
     cutoff_markers = _temporal_fft_cutoff_markers(preprocess_profile)
+    fft_display_max_hz = float(preprocess_profile.get("fft_display_max_hz", 0.5) or 0.5)
+    if fft_display_max_hz <= 0:
+        fft_display_max_hz = 0.5
     fft_features_per_page = 4
     n_pages = int(np.ceil(len(filtered_features) / float(fft_features_per_page)))
 
@@ -555,6 +558,7 @@ def plot_temporal_preprocessing_report(
                 ax.set_title(feat)
                 ax.set_xlabel("Frequence (Hz)")
                 ax.set_ylabel("Puissance (non normalisee)")
+                ax.set_xlim(0, fft_display_max_hz)
                 continue
 
             if raw_freqs is not None:
@@ -575,7 +579,7 @@ def plot_temporal_preprocessing_report(
             ax.set_title(feat)
             ax.set_xlabel("Frequence (Hz)")
             ax.set_ylabel("Puissance (non normalisee)")
-            ax.set_xlim(left=0)
+            ax.set_xlim(0, fft_display_max_hz)
             ax.grid(alpha=0.2)
 
             handles, labels = ax.get_legend_handles_labels()
