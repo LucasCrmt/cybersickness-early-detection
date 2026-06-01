@@ -7,7 +7,7 @@ from sklearn.model_selection import ParameterGrid
 
 from .models import _XGBClassifierWrapper, build_model, get_search_space
 
-_DEEP_MODEL_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}
+_DEEP_MODEL_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
 
 
 def _resolve_stream_profile(model_profile, stream_name):
@@ -90,24 +90,34 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
         search_space = get_search_space(stream_profile["task_type"], stream_profile)
 
         idx = _col_indices(stream_cols, feature_cols)
-        X_tr = X_train[:, idx]
-        X_vl = X_val[:, idx]
+        is_3d = X_train.ndim == 3
+
+        if is_3d:
+            X_tr = X_train[:, :, idx]   # (n, T, n_stream_features)
+            X_vl = X_val[:, :, idx]
+        else:
+            X_tr = X_train[:, idx]
+            X_vl = X_val[:, idx]
 
         model_type = stream_profile.get("model_type", "random_forest")
 
         if model_type in _DEEP_MODEL_TYPES:
-            seq_len = X_tr.shape[1]
-            X_tr_d = X_tr.reshape(-1, seq_len, 1)
-            X_vl_d = X_vl.reshape(-1, seq_len, 1)
+            if is_3d:
+                T, nf = X_tr.shape[1], X_tr.shape[2]
+            else:
+                T, nf = X_tr.shape[1], 1
+                X_tr = X_tr.reshape(-1, T, 1)
+                X_vl = X_vl.reshape(-1, T, 1)
+
             deep_profile = {
                 **stream_profile,
-                "sequence_length": seq_len,
-                "n_features": 1,
+                "sequence_length": T,
+                "n_features": nf,
                 "n_classes": int(len(set(y_train))) if is_classif else 1,
             }
-            m = build_model({"sequence_length": seq_len, "n_features": 1}, deep_profile)
-            m.fit(X_tr_d, y_train)
-            pred = m.predict(X_vl_d)
+            m = build_model({"sequence_length": T, "n_features": nf}, deep_profile)
+            m.fit(X_tr, y_train)
+            pred = m.predict(X_vl)
             score = (
                 f1_score(y_val, pred, average="weighted", zero_division=0)
                 if is_classif
@@ -117,6 +127,10 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
             label = "F1" if is_classif else "RMSE"
             print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {score:.4f}")
         else:
+            if is_3d:
+                X_tr = X_tr.reshape(X_tr.shape[0], -1)
+                X_vl = X_vl.reshape(X_vl.shape[0], -1)
+
             best_score, best_model = -np.inf, None
             for params in ParameterGrid(search_space):
                 m = build_model(params, stream_profile)
@@ -143,13 +157,22 @@ def make_meta_features(stream_models, stream_map, X, feature_cols, is_classifica
 
     Classification : predict_proba (vecteur de probabilités par classe).
     Régression     : predict (scalaire → colonne).
+
+    Supporte X 2D (n, n_features) et 3D (n, T, n_channels).
     """
     parts = []
+    is_3d = X.ndim == 3
     for stream_name, model in stream_models.items():
         idx = _col_indices(stream_map[stream_name], feature_cols)
-        X_s = X[:, idx]
-        if hasattr(model, "input_shape"):
-            X_s = X_s.reshape(-1, X_s.shape[1], 1)
+        is_deep = hasattr(model, "input_shape")
+        if is_3d:
+            X_s = X[:, :, idx]                  # (n, T, n_channels)
+            if not is_deep:
+                X_s = X_s.reshape(len(X_s), -1) # aplatir pour modèles classiques
+        else:
+            X_s = X[:, idx]
+            if is_deep:
+                X_s = X_s.reshape(-1, X_s.shape[1], 1)
         if is_classification and hasattr(model, "predict_proba"):
             parts.append(model.predict_proba(X_s))
         else:
