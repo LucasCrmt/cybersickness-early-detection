@@ -334,6 +334,41 @@ def _build_target_table(target_df, target_profile):
     return _build_target_from_minutes(target_df, target_profile, sid)
 
 
+def load_per_minute_targets(target_profile):
+    """Charge les cibles par minute sans merger avec un DataFrame de features.
+
+    Utile pour les pipelines sur données brutes où les features sont construites
+    séparément (ex: segmentation par minute).
+
+    Returns:
+        DataFrame avec colonnes [subject_id, minute, target] après discretisation
+        si configurée dans target_profile.
+    """
+    source = target_profile["source"]
+    target_mode = target_profile.get("target_mode", "per_minute")
+    if target_mode != "per_minute":
+        raise ValueError(
+            "load_per_minute_targets requiert target_mode='per_minute' dans TARGET_PROFILE."
+        )
+
+    if source == "xlsx":
+        xlsx_path = target_profile["xlsx_path"]
+        if not os.path.exists(xlsx_path):
+            raise FileNotFoundError(f"Fichier cible introuvable: {xlsx_path}")
+        target_df = pd.read_excel(xlsx_path, sheet_name=target_profile.get("sheet_name", 0))
+    elif source == "csv":
+        csv_path = target_profile["csv_path"]
+        if not os.path.exists(csv_path):
+            raise FileNotFoundError(f"Fichier cible introuvable: {csv_path}")
+        target_df = pd.read_csv(csv_path)
+    else:
+        raise ValueError("load_per_minute_targets supporte uniquement 'xlsx' et 'csv'.")
+
+    t = _build_target_table(target_df, target_profile)
+    t["subject_id"] = t["subject_id"].astype(str).str.strip()
+    return t
+
+
 def add_target(features_df, target_profile):
     source = target_profile["source"]
 
