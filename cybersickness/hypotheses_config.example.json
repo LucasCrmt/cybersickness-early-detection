@@ -1,0 +1,255 @@
+{
+  "seed": 42,
+  "continue_on_error": true,
+  "run_output_dir": "data/outputs/wk1",
+  "base_profiles": {
+    "data_profile": {
+      "source": "csv",
+      "file_path": "data/Donn\u00e9es brutes/DataPhase1_time.csv",
+      "subject_id_col": "Participant",
+      "time_col": "Time"
+    },
+    "preprocess_profile": {
+      "approach": "B",
+      "use_frequency_resampling": true,
+      "frequency_resampling_method": "uniform_time_step",
+      "uniform_time_step_s": 0.1,
+      "window_stage": "post_preprocess",
+      "window_duration_s": 30.0,
+      "window_overlap_s": 10.0,
+      "apply_temporal_lowpass": false,
+      "lowpass_cutoff_hz": 0.2,
+      "lowpass_order": 4,
+      "lowpass_min_points": 16,
+      "lowpass_features": "all",
+      "apply_temporal_highpass": false,
+      "highpass_cutoff_hz": 0.08,
+      "highpass_order": 4,
+      "highpass_min_points": 16,
+      "highpass_features": [
+        "HMDPosX",
+        "HMDPosY",
+        "HMDPosZ",
+        "RotX",
+        "RotY",
+        "RotZ",
+        "X gaze direction",
+        "Y gaze direction"
+      ],
+      "apply_temporal_bandpass": true,
+      "bandpass_ranges_hz": [
+        [0.08, 0.12],
+        [0.38, 0.42]
+      ],
+      "bandpass_order": 4,
+      "bandpass_min_points": 16,
+      "bandpass_features": [
+        "HMDPosX",
+        "HMDPosY",
+        "HMDPosZ",
+        "RotX",
+        "RotY",
+        "RotZ",
+        "X gaze direction",
+        "Y gaze direction"
+      ],
+      "imputation_strategy": "median",
+      "drop_low_information_features": true,
+      "min_valid_features": 1,
+      "normalization": "standard",
+      "time_col": "time",
+      "time_unit": "s",
+      "subject_id_col": "subject_id",
+      "exclude_features": [
+        "minute",
+        "time",
+        "sampling_hz",
+        "row_id",
+        "Left Pupil Diameter",
+        "Right Pupil Diameter",
+        "window_start",
+        "window_end",
+        "window_center",
+        "window_id",
+        "window_duration_s",
+        "window_overlap_s"
+      ],
+      "column_aggregations": {
+        "Pupil diameter AVG": {
+          "columns": [
+            "Left Pupil Diameter",
+            "Right Pupil Diameter"
+          ],
+          "strategy": "mean"
+        }
+      },
+      "include_features": [
+        "HMDPosX",
+        "HMDPosY",
+        "HMDPosZ",
+        "RotX",
+        "RotY",
+        "RotZ",
+        "Pupil diameter AVG",
+        "X gaze direction",
+        "Y gaze direction",
+        "isBoat",
+        "X World Position",
+        "Y World Position"
+      ]
+    },
+    "target_profile": {
+      "source": "xlsx",
+      "xlsx_path": "data/Questionnaires/FMS1_org.xlsx",
+      "sheet_name": "Feuil1",
+      "subject_id_col": "Sujet",
+      "target_mode": "fixed_minute",
+      "target_minute": 14,
+      "minute_columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      "minute_col": "minute",
+      "clip_quantiles": null,
+      "discretize": {
+        "bins": [0, 5, 10, 20],
+        "labels": ["low", "medium", "high"]
+      }
+    },
+    "model_profile": {
+      "model_type": "cnn_lstm",
+      "task_type": "classification",
+      "use_hyperparam_search": false,
+      "split_method": "group",
+      "test_size": 0.2,
+      "val_size": 0.2,
+      "class_weight": "balanced",
+      "random_state": 42
+    },
+    "output_profile": {
+      "output_dir": "data/outputs/wk1/reports",
+      "save_visual_report": true,
+      "visual_report_format": "both",
+      "visual_report_name": "night_batch",
+      "hypothesis": "Prediction du niveau de cybersickness (low/medium/high) a partir des signaux temporels tete/yeux + diametre pupillaire, reechantillonnes a 10 Hz, fenetres 30s overlap 10s, filtrage passe-bande autour de 0.1 Hz et 0.4 Hz, split inter-individuel.",
+      "visual_report_functions": [
+        "visual_hypothesis_page",
+        "visual_cover_page",
+        "visual_model_architecture_page",
+        "visual_split_report",
+        "visual_metrics_table_page",
+        "visual_subject_window_performance_page",
+        "visual_confusion_matrix_page",
+        "visual_temporal_preprocess_pages",     
+        "visual_missing_values_bar",
+        "visual_correlation_pages",
+        "visual_violin_pages"
+      ]
+    }
+  },
+  "hypotheses": [
+    {
+      "name": "h1_cnn_lstm_last_minute",
+      "profiles": {
+        "target_profile": {
+          "target_mode": "fixed_minute",
+          "target_minute": 14
+        },
+        "model_profile": {
+          "model_type": "cnn_lstm",
+          "split_method": "random"
+        },
+        "preprocess_profile": {
+          "uniform_time_step_s": 0.1,
+          "window_duration_s": 30.0,
+          "window_overlap_s": 10.0,
+          "apply_temporal_bandpass": true,
+          "bandpass_ranges_hz": [
+            [0.08, 0.12],
+            [0.38, 0.42]
+          ]
+        },
+        "output_profile": {
+          "visual_report_name": "h1_passband_cnn_lstm_group_last_minute",
+          "hypothesis": "Nous essayons de predire le niveau de cybersickness ressenti par un participant a partir du score ressenti a la 14eme minute (ou derniere) au FMS (low : [0-5[, medium : [5-10[, high : [10-20]) en utilisant une architecture CNN-LSTM. Les features utilisees sont les signaux temporels correspondant aux mouvements et rotations de la tete et des yeux, ainsi que le diametre pupillaire, reechantillonnes a 10 Hz (pas temporel uniforme de 0.1 s par interpolation lineaire). Les fenetres temporelles utilisees pour l'apprentissage ont une duree de 30 secondes, avec un chevauchement de 10 secondes. Un filtre passe-bande est applique aux signaux de mouvements et rotations de la tete et des yeux pour isoler la reponse specifique aux mouvements induits dans la simulation, autour de 0.1 Hz ([0.08, 0.12] Hz) et 0.4 Hz ([0.38, 0.42] Hz). Les features sont standardisees (centrage-reduction : moyenne 0, ecart-type 1, ajuste sur le train uniquement) pour le CNN LSTM. La variable diametre pupillaire correspond a la moyenne des diametres pupillaires des yeux droit et gauche."
+        }
+      }
+    },
+    {
+      "name": "h2_cnn_lstm_per_minute",
+      "profiles": {
+        "target_profile": {
+          "target_mode": "per_minute"
+        },
+        "model_profile": {
+          "model_type": "cnn_lstm",
+          "split_method": "random"
+        },
+        "preprocess_profile": {
+          "uniform_time_step_s": 0.1,
+          "window_duration_s": 30.0,
+          "window_overlap_s": 10.0,
+          "apply_temporal_bandpass": true,
+          "bandpass_ranges_hz": [
+            [0.08, 0.12],
+            [0.38, 0.42]
+          ]
+        },
+        "output_profile": {
+          "visual_report_name": "h2_passband_cnn_lstm_group_per_minute",
+          "hypothesis": "Nous essayons de predire le niveau de cybersickness ressenti par un participant a partir du score ressenti a chaque minute au FMS (low : [0-5[, medium : [5-10[, high : [10-20]) en utilisant une architecture CNN-LSTM. Les features utilisees sont les signaux temporels correspondant aux mouvements et rotations de la tete et des yeux, ainsi que le diametre pupillaire, reechantillonnes a 10 Hz (pas temporel uniforme de 0.1 s par interpolation lineaire). Les fenetres temporelles utilisees pour l'apprentissage ont une duree de 30 secondes, avec un chevauchement de 10 secondes. Un filtre passe-bande est applique aux signaux de mouvements et rotations de la tete et des yeux pour isoler la reponse specifique aux mouvements induits dans la simulation, autour de 0.1 Hz ([0.08, 0.12] Hz) et 0.4 Hz ([0.38, 0.42] Hz). Les features sont standardisees (centrage-reduction : moyenne 0, ecart-type 1, ajuste sur le train uniquement) pour le CNN LSTM. La variable diametre pupillaire correspond a la moyenne des diametres pupillaires des yeux droit et gauche."
+        }
+      }
+    },
+    {
+      "name": "h3_bilstm_last_minute",
+      "profiles": {
+        "target_profile": {
+          "target_mode": "fixed_minute",
+          "target_minute": 14
+        },
+        "model_profile": {
+          "model_type": "bilstm",
+          "split_method": "random"
+        },
+        "preprocess_profile": {
+          "uniform_time_step_s": 0.1,
+          "window_duration_s": 30.0,
+          "window_overlap_s": 10.0,
+          "apply_temporal_bandpass": true,
+          "bandpass_ranges_hz": [
+            [0.08, 0.12],
+            [0.38, 0.42]
+          ]
+        },
+        "output_profile": {
+          "visual_report_name": "h3_passband_bilstm_group_last_minute",
+          "hypothesis": "Nous essayons de predire le niveau de cybersickness ressenti par un participant a partir du score ressenti a la 14eme minute (ou derniere) au FMS (low : [0-5[, medium : [5-10[, high : [10-20]) en utilisant une architecture BiLSTM. Les features utilisees sont les signaux temporels correspondant aux mouvements et rotations de la tete et des yeux, ainsi que le diametre pupillaire, reechantillonnes a 10 Hz (pas temporel uniforme de 0.1 s par interpolation lineaire). Les fenetres temporelles utilisees pour l'apprentissage ont une duree de 30 secondes, avec un chevauchement de 10 secondes. Un filtre passe-bande est applique aux signaux de mouvements et rotations de la tete et des yeux pour isoler la reponse specifique aux mouvements induits dans la simulation, autour de 0.1 Hz ([0.08, 0.12] Hz) et 0.4 Hz ([0.38, 0.42] Hz). Les features sont standardisees (centrage-reduction : moyenne 0, ecart-type 1, ajuste sur le train uniquement) pour le CNN LSTM. La variable diametre pupillaire correspond a la moyenne des diametres pupillaires des yeux droit et gauche."
+        }
+      }
+    },
+    {
+      "name": "h4_bilstm_per_minute",
+      "profiles": {
+        "target_profile": {
+          "target_mode": "per_minute"
+        },
+        "model_profile": {
+          "model_type": "bilstm",
+          "split_method": "random"
+        },
+        "preprocess_profile": {
+          "uniform_time_step_s": 0.1,
+          "window_duration_s": 30.0,
+          "window_overlap_s": 10.0,
+          "apply_temporal_bandpass": true,
+          "bandpass_ranges_hz": [
+            [0.08, 0.12],
+            [0.38, 0.42]
+          ]
+        },
+        "output_profile": {
+          "visual_report_name": "h4_passband_bilstm_group_per_minute",
+          "hypothesis": "Nous essayons de predire le niveau de cybersickness ressenti par un participant a partir du score ressenti a chaque minute au FMS (low : [0-5[, medium : [5-10[, high : [10-20]) en utilisant une architecture BiLSTM. Les features utilisees sont les signaux temporels correspondant aux mouvements et rotations de la tete et des yeux, ainsi que le diametre pupillaire, reechantillonnes a 10 Hz (pas temporel uniforme de 0.1 s par interpolation lineaire). Les fenetres temporelles utilisees pour l'apprentissage ont une duree de 30 secondes, avec un chevauchement de 10 secondes. Un filtre passe-bande est applique aux signaux de mouvements et rotations de la tete et des yeux pour isoler la reponse specifique aux mouvements induits dans la simulation, autour de 0.1 Hz ([0.08, 0.12] Hz) et 0.4 Hz ([0.38, 0.42] Hz). Les features sont standardisees (centrage-reduction : moyenne 0, ecart-type 1, ajuste sur le train uniquement) pour le CNN LSTM. La variable diametre pupillaire correspond a la moyenne des diametres pupillaires des yeux droit et gauche."
+        }
+      }
+    }
+  ]
+}
