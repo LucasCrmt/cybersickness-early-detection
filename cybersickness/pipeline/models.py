@@ -90,7 +90,7 @@ def get_search_space(task_type, model_profile=None):
     # Modèles approche B - séries temporelles
     if mt == "cnn_1d":
         return {
-            "filters": [32, 64],
+            "filters": [2, 3],
             "kernel_size": [3, 5],
             "dropout_rate": [0.2, 0.4],
             "learning_rate": [0.001, 0.01],
@@ -99,7 +99,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "inception_time":
         return {
-            "filters": [32, 64],
+            "filters": [2, 3],
             "depth": [2, 3],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.005],
@@ -116,7 +116,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "cnn_lstm":
         return {
-            "cnn_filters": [32, 64],
+            "cnn_filters": [2, 3],
             "cnn_kernel": [3, 5],
             "lstm_units": [32, 64],
             "dropout_rate": [0.2, 0.3],
@@ -146,7 +146,7 @@ def _build_cnn_1d(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN 1D.")
     
-    filters = params.get("filters", 32)
+    filters = params.get("filters", 3)
     kernel_size = params.get("kernel_size", 3)
     dropout_rate = params.get("dropout_rate", 0.2)
     
@@ -170,7 +170,7 @@ def _build_inception_time(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser InceptionTime.")
     
-    filters = params.get("filters", 32)
+    filters = params.get("filters", 3)
     depth = params.get("depth", 2)
     dropout_rate = params.get("dropout_rate", 0.2)
     
@@ -242,7 +242,7 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN-LSTM.")
     
-    cnn_filters = params.get("cnn_filters", 32)
+    cnn_filters = params.get("cnn_filters", 3)
     cnn_kernel = params.get("cnn_kernel", 3)
     lstm_units = params.get("lstm_units", 32)
     dropout_rate = params.get("dropout_rate", 0.2)
