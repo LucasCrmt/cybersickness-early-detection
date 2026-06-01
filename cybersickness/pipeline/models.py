@@ -13,15 +13,16 @@ from xgboost import XGBClassifier, XGBRegressor
 try:
     from tensorflow.keras.models import Sequential, Model
     from tensorflow.keras.layers import (
-        Conv1D, Dense, Dropout, LSTM, Bidirectional, Input, Flatten, 
-        concatenate, Activation, BatchNormalization, GlobalAveragePooling1D
+        Conv1D, Dense, Dropout, LSTM, Bidirectional, Input, Flatten,
+        concatenate, Activation, BatchNormalization, GlobalAveragePooling1D,
+        TimeDistributed, MaxPooling1D, Reshape,
     )
     from tensorflow.keras.optimizers import Adam
     TF_AVAILABLE = True
 except ImportError:
     TF_AVAILABLE = False
 
-_VALID_MODEL_TYPES = {"random_forest", "xgboost", "cnn_1d", "inception_time", "bilstm", "cnn_lstm"}
+_VALID_MODEL_TYPES = {"random_forest", "xgboost", "cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
 
 
 class _XGBClassifierWrapper:
@@ -123,7 +124,18 @@ def get_search_space(task_type, model_profile=None):
             "learning_rate": [0.001, 0.01],
             "batch_size": [16, 32],
         }
-    
+
+    if mt == "td_cnn_lstm":
+        return {
+            "filters":      [32, 64],
+            "kernel_size":  [3, 5],
+            "lstm_units":   [64, 128],
+            "dropout_rate": [0.2, 0.5],
+            "learning_rate": [0.001, 0.01],
+            "batch_size":   [32, 64],
+            "n_subseq":     [4],
+        }
+
     if mt == "svm":
         return {
             "C": [0.1, 1, 10, 100],
@@ -245,6 +257,48 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
     return model
 
 
+def _build_td_cnn_lstm(input_shape, output_shape, is_classif, params):
+    """Time-Distributed CNN-LSTM inspiré de Islam et al. (ISMAR 2021).
+
+    La séquence (T, n_features) est découpée en n_subseq sous-séquences.
+    Chaque sous-séquence est traitée indépendamment par un CNN (TimeDistributed),
+    puis l'LSTM encode les dépendances temporelles entre les blocs.
+
+    Adapté de l'architecture du papier :
+    - Input (T, n_features) → Reshape (n_subseq, T//n_subseq, n_features)
+    - TimeDistributed(Conv1D) → TimeDistributed(MaxPool) → TimeDistributed(Flatten)
+    - LSTM → Dense(256) → Output
+    """
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow/Keras requis pour td_cnn_lstm.")
+
+    T, n_features = input_shape
+    n_subseq     = params.get("n_subseq", 4)
+    filters      = params.get("filters", 32)
+    kernel_size  = params.get("kernel_size", 3)
+    lstm_units   = params.get("lstm_units", 64)
+    dropout_rate = params.get("dropout_rate", 0.2)
+
+    # T doit être divisible par n_subseq
+    subseq_len = T // n_subseq
+
+    inp = Input(shape=(T, n_features))
+    x = Reshape((n_subseq, subseq_len, n_features))(inp)
+
+    x = TimeDistributed(Conv1D(filters, kernel_size, activation="relu", padding="same"))(x)
+    x = TimeDistributed(MaxPooling1D(pool_size=2))(x)
+    x = TimeDistributed(Dropout(dropout_rate))(x)
+    x = TimeDistributed(Flatten())(x)
+
+    x = LSTM(lstm_units, dropout=dropout_rate, recurrent_dropout=0.2)(x)
+    x = Dense(256, activation="relu")(x)
+    x = BatchNormalization()(x)
+    x = Dropout(0.5)(x)
+    out = Dense(output_shape, activation="softmax" if is_classif else "linear")(x)
+
+    return Model(inputs=inp, outputs=out)
+
+
 class KerasSklearnWrapper:
     """Wrapper pour rendre les modèles Keras compatibles avec l'interface sklearn."""
     
@@ -263,24 +317,42 @@ class KerasSklearnWrapper:
         self.class_to_index_ = None
     
     def fit(self, X, y):
-        """Entraîne le modèle."""
+        """Entraîne le modèle avec poids de classe équilibrés."""
         from tensorflow.keras.optimizers import Adam
+        from sklearn.utils.class_weight import compute_class_weight
 
         y_train = y
+        class_weight_dict = None
         if self.is_classif:
             # Keras sparse_categorical_crossentropy attend des labels entiers.
             y_series = pd.Series(y)
             self.classes_ = list(pd.unique(y_series.dropna()))
             self.class_to_index_ = {label: i for i, label in enumerate(self.classes_)}
             y_train = y_series.map(self.class_to_index_).to_numpy(dtype=np.int32)
-        
+
+            # Poids de classe balancés pour gérer le déséquilibre (comme class_weight="balanced" sklearn)
+            cw = compute_class_weight("balanced", classes=np.unique(y_train), y=y_train)
+            class_weight_dict = {int(i): float(w) for i, w in enumerate(cw)}
+
         self.model = self.model_builder(self.input_shape, self.output_shape, self.is_classif, self.params)
         self.model.compile(
             optimizer=Adam(learning_rate=self.learning_rate),
             loss='sparse_categorical_crossentropy' if self.is_classif else 'mse',
             metrics=['accuracy' if self.is_classif else 'mse']
         )
-        self.model.fit(X, y_train, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
+        from tensorflow.keras.callbacks import EarlyStopping
+        callbacks = [
+            EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True, verbose=0)
+        ]
+        self.model.fit(
+            X, y_train,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            verbose=self.verbose,
+            class_weight=class_weight_dict,
+            validation_split=0.1,
+            callbacks=callbacks,
+        )
         return self
     
     def predict(self, X):
@@ -349,7 +421,20 @@ def build_model(params, model_profile):
             is_classif=is_classif,
             params=params
         )
-    
+
+    if mt == "td_cnn_lstm":
+        T = params.get("sequence_length", 60)
+        n_subseq = params.get("n_subseq", 4)
+        # Ensure T is divisible by n_subseq
+        T = (T // n_subseq) * n_subseq
+        return KerasSklearnWrapper(
+            _build_td_cnn_lstm,
+            input_shape=(T, params.get("n_features", 1)),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params={**params, "sequence_length": T},
+        )
+
     raise ValueError(f"Type de modèle non reconnu: {mt}")
     
 
