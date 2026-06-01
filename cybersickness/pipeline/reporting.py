@@ -5,7 +5,7 @@ from datetime import datetime
 
 import joblib
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -504,7 +504,9 @@ def visual_hypothesis_page(context, save_figure):
 
 
 def visual_split_report(context, save_figure):
-    dataset_df = context["dataset_df"]
+    dataset_df = context.get("dataset_df_train")
+    if dataset_df is None:
+        dataset_df = context["dataset_df"]
     model_profile = context["model_profile"]
     train_idx = context["train_idx"]
     val_idx = context["val_idx"]
@@ -1162,7 +1164,9 @@ def _compute_subject_performance_rows(dataset_df, test_idx, y_test, pred_test, m
 def visual_subject_window_performance_page(context, save_figure):
     """Pages montrant la taille des fenetres puis la performance individuelle paginee."""
     model_profile = context.get("model_profile") or {}
-    dataset_df = context.get("dataset_df")
+    dataset_df = context.get("dataset_df_train")
+    if dataset_df is None:
+        dataset_df = context.get("dataset_df")
     test_idx = context.get("test_idx")
     y_test = context.get("y_test")
     final_model = context.get("final_model")
@@ -1220,14 +1224,44 @@ def visual_subject_window_performance_page(context, save_figure):
 
     display_rows = sample_df.head(min(len(sample_df), 18)).copy()
     if len(display_rows) > 0 and has_window_bounds:
+        def _short_class_label(value):
+            if pd.isna(value):
+                return "NA"
+
+            txt = str(value).strip().lower()
+            if txt in {"low", "l", "0", "0.0"}:
+                return "low"
+            if txt in {"medium", "med", "m", "1", "1.0"}:
+                return "med"
+            if txt in {"high", "h", "2", "2.0"}:
+                return "high"
+            return txt
+
         y_pos = 10
         bar_height = 7
         for _, row in display_rows.iterrows():
             start = float(row.get("window_start", 0.0))
             end = float(row.get("window_end", start))
             width = max(0.0, end - start)
-            ax_timeline.broken_barh([(start, width)], (y_pos, bar_height), facecolors="#4C72B0", alpha=0.75)
-            ax_timeline.text(start + width / 2.0, y_pos + bar_height / 2.0, f"W{int(row.get('window_id', 0))}", ha="center", va="center", fontsize=8, color="white")
+
+            true_label = _short_class_label(row.get("y_true"))
+            pred_label = _short_class_label(row.get("y_pred"))
+            is_correct = true_label == pred_label and true_label != "NA"
+            bar_color = "#2E8B57" if is_correct else "#C0392B"
+
+            ax_timeline.broken_barh([(start, width)], (y_pos, bar_height), facecolors=bar_color, alpha=0.8)
+
+            window_id = int(row.get("window_id", 0))
+            label = f"W{window_id} : real={true_label} - pred={pred_label}"
+            ax_timeline.text(
+                end + 1.5,
+                y_pos + bar_height / 2.0,
+                label,
+                ha="left",
+                va="center",
+                fontsize=7,
+                color="#1f1f1f",
+            )
             y_pos += 10
 
     ax_timeline.set_xlabel("Temps (s)")
@@ -1238,12 +1272,17 @@ def visual_subject_window_performance_page(context, save_figure):
         + (f", overlap={overlap_s:.2f}s" if overlap_s is not None else ""),
         fontsize=11,
     )
+    legend_handles = [
+        Patch(facecolor="#2E8B57", edgecolor="none", label="Prediction correcte"),
+        Patch(facecolor="#C0392B", edgecolor="none", label="Prediction incorrecte"),
+    ]
+    ax_timeline.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
     ax_timeline.grid(axis="x", alpha=0.2)
     if len(display_rows) > 0 and has_window_bounds:
         t_min = float(pd.to_numeric(display_rows["window_start"], errors="coerce").min())
         t_max = float(pd.to_numeric(display_rows["window_end"], errors="coerce").max())
         if np.isfinite(t_min) and np.isfinite(t_max):
-            ax_timeline.set_xlim(max(0.0, t_min - 0.5), t_max + 0.5)
+            ax_timeline.set_xlim(max(0.0, t_min - 0.5), t_max + 35.0)
     elif len(display_rows) > 0:
         ax_timeline.text(
             0.5,
@@ -1628,6 +1667,8 @@ def export_visual_report(
     final_model=None,
     X_test_imp=None,
     y_test=None,
+    dataset_df_train=None,
+    feature_cols_train=None,
 ):
     """
     Exporte un rapport visuel modulaire compose de visualisations selectionnables.
@@ -1648,6 +1689,8 @@ def export_visual_report(
     final_model               : modele final entraine (optionnel, pour la matrice de confusion)
     X_test_imp                : matrice test imputee (optionnel, pour la matrice de confusion)
     y_test                    : cible test (optionnel, pour la matrice de confusion)
+    dataset_df_train          : dataframe train/fenetre (optionnel, pour pages basees sur split)
+    feature_cols_train        : features train/fenetre (optionnel, reserve compatibilite)
 
     output_profile optionnel :
     visual_report_functions   : "all" ou liste de noms de fonctions de visualisation
@@ -1691,6 +1734,8 @@ def export_visual_report(
     context = {
         "dataset_df": dataset_df,
         "feature_cols": feature_cols,
+        "dataset_df_train": dataset_df_train,
+        "feature_cols_train": feature_cols_train,
         "model_profile": model_profile,
         "output_profile": output_profile,
         "train_idx": train_idx,
