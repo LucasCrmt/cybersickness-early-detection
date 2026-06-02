@@ -184,7 +184,7 @@ def train_with_optional_hyperparameter_search(
     is_classification = model_profile["task_type"] == "classification"
     model_type = str(model_profile.get("model_type", "random_forest")).lower()
 
-    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"} and (sequence_length is None or n_features is None):
+    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm", "multistream"} and (sequence_length is None or n_features is None):
         raise ValueError("sequence_length et n_features sont requis pour les modeles temporels deep.")
 
     if use_search:
@@ -202,7 +202,7 @@ def train_with_optional_hyperparameter_search(
 
         for i, params in enumerate(grid, start=1):
             params = dict(params)
-            if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+            if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm", "multistream"}:
                 params["sequence_length"] = int(sequence_length)
                 params["n_features"] = int(n_features)
 
@@ -250,7 +250,7 @@ def train_with_optional_hyperparameter_search(
         ascending = not is_classification
         results_df = results_df.sort_values(by=sort_col, ascending=ascending).reset_index(drop=True)
         final_params = dict(best_params or {})
-        if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+        if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm", "multistream"}:
             final_params["sequence_length"] = int(sequence_length)
             final_params["n_features"] = int(n_features)
 
@@ -262,7 +262,7 @@ def train_with_optional_hyperparameter_search(
         print("Recherche hyperparametres desactivee: utilisation des valeurs par defaut.")
 
     params = {}
-    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm"}:
+    if model_type in {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm", "multistream"}:
         params["sequence_length"] = int(sequence_length)
         params["n_features"] = int(n_features)
 
