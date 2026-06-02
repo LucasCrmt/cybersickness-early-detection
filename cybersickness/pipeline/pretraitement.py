@@ -434,6 +434,42 @@ def apply_target_discretization(df, target_profile):
     if disc is None:
         return out
 
+    method = str(disc.get("method", "bins")).strip().lower()
+    target_num = pd.to_numeric(out["target"], errors="coerce")
+
+    if method in {"quantile", "quantiles", "qcut"}:
+        labels = disc.get("labels", ["low", "medium", "high"])
+        quantiles = disc.get("quantiles")
+
+        if quantiles is None:
+            n_classes = int(disc.get("n_classes", len(labels)))
+            if n_classes < 2:
+                raise ValueError("discretize['n_classes'] doit etre >= 2 pour un decoupage par quantiles.")
+            quantiles = np.linspace(0.0, 1.0, n_classes + 1).tolist()
+
+        quantiles = [float(qv) for qv in quantiles]
+        if len(quantiles) < 3:
+            raise ValueError("discretize['quantiles'] doit contenir au moins 3 bornes (ex: [0, 0.33, 0.66, 1]).")
+        if abs(quantiles[0]) > 1e-12 or abs(quantiles[-1] - 1.0) > 1e-12:
+            raise ValueError("discretize['quantiles'] doit commencer a 0 et finir a 1.")
+        if any(q2 <= q1 for q1, q2 in zip(quantiles[:-1], quantiles[1:])):
+            raise ValueError("discretize['quantiles'] doit etre strictement croissant.")
+
+        if len(labels) != len(quantiles) - 1:
+            raise ValueError(
+                f"'labels' doit avoir exactement {len(quantiles) - 1} elements pour {len(quantiles)} quantiles. "
+                f"Recu: {len(labels)} labels."
+            )
+
+        # Utilise le rang pour rendre qcut robuste aux nombreuses valeurs identiques.
+        ranked = target_num.rank(method="first")
+        out["target"] = pd.qcut(ranked, q=quantiles, labels=labels)
+        out = out.dropna(subset=["target"])
+        return out
+
+    if method != "bins":
+        raise ValueError("discretize['method'] doit etre 'bins' (defaut) ou 'quantile'.")
+
     bins = disc["bins"]
     labels = disc["labels"]
 
@@ -444,7 +480,7 @@ def apply_target_discretization(df, target_profile):
         )
 
     out["target"] = pd.cut(
-        pd.to_numeric(out["target"], errors="coerce"),
+        target_num,
         bins=bins,
         labels=labels,
         include_lowest=True,
