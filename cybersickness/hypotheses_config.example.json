@@ -109,7 +109,8 @@
       "minute_col": "minute",
       "clip_quantiles": null,
       "discretize": {
-        "bins": [0, 5, 10, 20],
+        "method": "quantile",
+        "quantiles": [0.0, 0.3333333333, 0.6666666667, 1.0],
         "labels": ["low", "medium", "high"]
       }
     },
