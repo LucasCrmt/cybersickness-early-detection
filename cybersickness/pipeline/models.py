@@ -15,14 +15,18 @@ try:
     from tensorflow.keras.layers import (
         Conv1D, Dense, Dropout, LSTM, Bidirectional, Input, Flatten,
         concatenate, Activation, BatchNormalization, GlobalAveragePooling1D,
-        TimeDistributed, MaxPooling1D, Reshape,
+        TimeDistributed, MaxPooling1D, Reshape, Lambda,
     )
     from tensorflow.keras.optimizers import Adam
     TF_AVAILABLE = True
 except ImportError:
     TF_AVAILABLE = False
 
-_VALID_MODEL_TYPES = {"random_forest", "xgboost", "cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
+_VALID_MODEL_TYPES = {
+    "random_forest", "xgboost",
+    "cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm",
+    "multistream",   # fusion end-to-end deux branches (Islam et al. ISMAR 2021)
+}
 
 
 class _XGBClassifierWrapper:
@@ -136,6 +140,16 @@ def get_search_space(task_type, model_profile=None):
             "n_subseq":     [4],
         }
 
+    if mt == "multistream":
+        return {
+            "cnn_filters":    [32, 64],
+            "lstm_units":     [64, 128],
+            "dropout_rate":   [0.2, 0.3],
+            "learning_rate":  [0.001, 0.01],
+            "batch_size":     [16, 32],
+            # n_eye_features est fixe par les donnees, pas recherche ici
+        }
+
     if mt == "svm":
         return {
             "C": [0.1, 1, 10, 100],
@@ -163,10 +177,10 @@ def _build_cnn_1d(input_shape, output_shape, is_classif, params):
     dropout_rate = params.get("dropout_rate", 0.2)
     
     model = Sequential([
-        Conv1D(filters, kernel_size, activation='relu', input_shape=input_shape),
+        Conv1D(filters, kernel_size, activation='relu', padding='same', input_shape=input_shape),
         BatchNormalization(),
         Dropout(dropout_rate),
-        Conv1D(filters * 2, kernel_size, activation='relu'),
+        Conv1D(filters * 2, kernel_size, activation='relu', padding='same'),
         BatchNormalization(),
         Dropout(dropout_rate),
         GlobalAveragePooling1D(),
@@ -243,10 +257,10 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
     dropout_rate = params.get("dropout_rate", 0.2)
     
     model = Sequential([
-        Conv1D(cnn_filters, cnn_kernel, activation='relu', input_shape=input_shape),
+        Conv1D(cnn_filters, cnn_kernel, activation='relu', padding='same', input_shape=input_shape),
         BatchNormalization(),
         Dropout(dropout_rate),
-        Conv1D(cnn_filters * 2, cnn_kernel, activation='relu'),
+        Conv1D(cnn_filters * 2, cnn_kernel, activation='relu', padding='same'),
         BatchNormalization(),
         Dropout(dropout_rate),
         LSTM(lstm_units, return_sequences=False, dropout=dropout_rate),
@@ -297,6 +311,95 @@ def _build_td_cnn_lstm(input_shape, output_shape, is_classif, params):
     out = Dense(output_shape, activation="softmax" if is_classif else "linear")(x)
 
     return Model(inputs=inp, outputs=out)
+
+
+def _build_multistream_fusion(input_shape, output_shape, is_classif, params):
+    """Fusion end-to-end deux branches (eye et head) inspirée de Islam et al. (ISMAR 2021).
+
+    Paramètres architecturaux (fixes par hypothèse, injectés depuis model_profile) :
+      branch_type      (str)  : "cnn_lstm" (défaut) ou "inception".
+      n_eye_features   (int)  : colonnes oculaires en tête du tenseur (défaut 3).
+      eye_cnn_filters  (int)  : filtres Conv1D branche eye  (défaut = cnn_filters).
+      head_cnn_filters (int)  : filtres Conv1D branche head (défaut = cnn_filters).
+      eye_lstm_units   (int)  : unités LSTM branche eye     (défaut = lstm_units).
+      head_lstm_units  (int)  : unités LSTM branche head    (défaut = lstm_units).
+
+    Hyperparamètres searchés :
+      cnn_filters   (int)  : filtres Conv1D partagés si pas de surcharge (défaut 32).
+      lstm_units    (int)  : unités LSTM partagées si pas de surcharge (défaut 64).
+      dropout_rate  (float): dropout dans les branches et la fusion (défaut 0.2).
+    """
+    if not TF_AVAILABLE:
+        raise ImportError("TensorFlow requis pour multistream.")
+
+    T, n_features = input_shape
+    branch_type   = str(params.get("branch_type", "cnn_lstm")).lower()
+    n_eye         = int(params.get("n_eye_features", 3))
+    n_head        = n_features - n_eye
+    cnn_filters   = int(params.get("cnn_filters",   32))
+    lstm_units    = int(params.get("lstm_units",    64))
+    dropout_rate  = float(params.get("dropout_rate", 0.2))
+    eye_cnn_f     = int(params.get("eye_cnn_filters",  cnn_filters))
+    head_cnn_f    = int(params.get("head_cnn_filters", cnn_filters))
+    eye_lstm_u    = int(params.get("eye_lstm_units",   lstm_units))
+    head_lstm_u   = int(params.get("head_lstm_units",  lstm_units))
+
+    if n_eye <= 0 or n_head <= 0:
+        raise ValueError(
+            f"n_eye_features={n_eye} invalide pour n_features={n_features}. "
+            "Verifier que les features eye sont en premier dans include_features."
+        )
+
+    def _cnn_lstm_branch(x_in, name, n_filt, lstm_u):
+        """Branche CNN-LSTM (architecture du papier Islam et al.)."""
+        x = Conv1D(n_filt, 3, activation="relu", padding="same",     name=f"conv1_{name}")(x_in)
+        x = BatchNormalization(name=f"bn1_{name}")(x)
+        x = Dropout(dropout_rate, name=f"drop1_{name}")(x)
+        x = Conv1D(n_filt * 2, 3, activation="relu", padding="same", name=f"conv2_{name}")(x)
+        x = BatchNormalization(name=f"bn2_{name}")(x)
+        x = Dropout(dropout_rate, name=f"drop2_{name}")(x)
+        x = LSTM(lstm_u, dropout=dropout_rate, recurrent_dropout=0.2, name=f"lstm_{name}")(x)
+        x = Dense(256, activation="relu", name=f"dense_{name}")(x)
+        x = BatchNormalization(name=f"bn3_{name}")(x)
+        x = Dropout(0.5, name=f"drop3_{name}")(x)
+        return x
+
+    def _inception_branch(x_in, name, n_filt):
+        """Branche InceptionTime: 2 blocs de convolutions parallèles k=1/3/5 + GAP + Dense."""
+        x = x_in
+        for d in range(2):
+            c1 = Conv1D(n_filt, 1, activation="relu", padding="same", name=f"inc_k1_{name}_{d}")(x)
+            c3 = Conv1D(n_filt, 3, activation="relu", padding="same", name=f"inc_k3_{name}_{d}")(x)
+            c5 = Conv1D(n_filt, 5, activation="relu", padding="same", name=f"inc_k5_{name}_{d}")(x)
+            x  = concatenate([c1, c3, c5], name=f"inc_cat_{name}_{d}")
+            x  = BatchNormalization(name=f"inc_bn_{name}_{d}")(x)
+            x  = Dropout(dropout_rate, name=f"inc_drop_{name}_{d}")(x)
+        x = GlobalAveragePooling1D(name=f"inc_gap_{name}")(x)
+        x = Dense(256, activation="relu", name=f"inc_dense_{name}")(x)
+        x = BatchNormalization(name=f"inc_bnd_{name}")(x)
+        x = Dropout(0.5, name=f"inc_dropd_{name}")(x)
+        return x
+
+    inp    = Input(shape=(T, n_features), name="input_all")
+    x_eye  = Lambda(lambda z: z[:, :, :n_eye],  name="slice_eye")(inp)
+    x_head = Lambda(lambda z: z[:, :, n_eye:],  name="slice_head")(inp)
+
+    if branch_type == "inception":
+        feat_eye  = _inception_branch(x_eye,  "eye",  eye_cnn_f)
+        feat_head = _inception_branch(x_head, "head", head_cnn_f)
+    else:  # "cnn_lstm" (défaut)
+        feat_eye  = _cnn_lstm_branch(x_eye,  "eye",  eye_cnn_f,  eye_lstm_u)
+        feat_head = _cnn_lstm_branch(x_head, "head", head_cnn_f, head_lstm_u)
+
+    fused = concatenate([feat_eye, feat_head], name="fusion")
+    fused = Dense(256, activation="relu", name="fusion_dense")(fused)
+    fused = BatchNormalization(name="fusion_bn")(fused)
+    fused = Dropout(dropout_rate, name="fusion_drop")(fused)
+    out   = Dense(output_shape,
+                  activation="softmax" if is_classif else "linear",
+                  name="output")(fused)
+
+    return Model(inputs=inp, outputs=out, name="multistream_fusion")
 
 
 class KerasSklearnWrapper:
@@ -425,7 +528,6 @@ def build_model(params, model_profile):
     if mt == "td_cnn_lstm":
         T = params.get("sequence_length", 60)
         n_subseq = params.get("n_subseq", 4)
-        # Ensure T is divisible by n_subseq
         T = (T // n_subseq) * n_subseq
         return KerasSklearnWrapper(
             _build_td_cnn_lstm,
@@ -433,6 +535,27 @@ def build_model(params, model_profile):
             output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
             is_classif=is_classif,
             params={**params, "sequence_length": T},
+        )
+
+    if mt == "multistream":
+        T  = params.get("sequence_length", 300)
+        nf = params.get("n_features", 12)
+        _ARCH_KEYS = (
+            "branch_type", "n_eye_features",
+            "eye_cnn_filters", "head_cnn_filters",
+            "eye_lstm_units",  "head_lstm_units",
+            # Hyperparamètres fixes (utilisés quand use_hyperparam_search=False)
+            "cnn_filters", "lstm_units", "dropout_rate", "learning_rate", "batch_size",
+        )
+        injected = {k: model_profile[k] for k in _ARCH_KEYS
+                    if k in model_profile and k not in params}
+        merged_params = {**injected, **params}
+        return KerasSklearnWrapper(
+            _build_multistream_fusion,
+            input_shape=(T, nf),
+            output_shape=model_profile.get("n_classes", 2) if is_classif else 1,
+            is_classif=is_classif,
+            params=merged_params,
         )
 
     raise ValueError(f"Type de modèle non reconnu: {mt}")
