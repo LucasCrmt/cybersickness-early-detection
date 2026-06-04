@@ -558,14 +558,13 @@ def build_model(params, model_profile):
             params=merged_params,
         )
 
-    raise ValueError(f"Type de modèle non reconnu: {mt}")
-    
-
     if mt == "svm":
         class_weight = model_profile.get("class_weight", None) if is_classif else None
         if is_classif:
             return SVC(class_weight=class_weight, **params)
         return SVR(**params)
+
+    raise ValueError(f"Type de modèle non reconnu: {mt}")
 
 
 
