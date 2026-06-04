@@ -109,12 +109,27 @@ def plot_feature_report(dataset_df, feature_cols, model_profile, top_n_corr=20, 
     else:
         target_order = sorted(dataset_df["target"].dropna().unique(), key=str)
     for i, col in enumerate(cols_box):
+        plot_df = dataset_df[["target", col]].copy()
+        y_col = col
+        title = col
+        if str(col).strip().lower() == "isboat":
+            # Affiche isBoat en pourcentage pour rendre la distribution plus lisible.
+            values = pd.to_numeric(plot_df[col], errors="coerce")
+            y_col = "__isboat_pct__"
+            if not values.dropna().empty and ((values.dropna() >= 0) & (values.dropna() <= 1)).all():
+                plot_df[y_col] = values * 100.0
+            else:
+                plot_df[y_col] = values
+            title = "isBoat (%)"
+
         sns.violinplot(
-            data=dataset_df, x="target", y=col, order=target_order,
+            data=plot_df, x="target", y=y_col, order=target_order,
             ax=axes[i], inner="box", cut=0, palette="Set2",
         )
-        axes[i].set_title(col, fontsize=10)
+        axes[i].set_title(title, fontsize=10)
         axes[i].set_xlabel("")
+        if str(col).strip().lower() == "isboat":
+            axes[i].set_ylabel("Pourcentage (%)")
 
     for j in range(len(cols_box), len(axes)):
         axes[j].set_visible(False)

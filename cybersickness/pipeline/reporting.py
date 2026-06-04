@@ -5,7 +5,7 @@ from datetime import datetime
 
 import joblib
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch, Patch
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -683,7 +683,9 @@ def visual_hypothesis_page(context, save_figure):
 
 
 def visual_split_report(context, save_figure):
-    dataset_df = context["dataset_df"]
+    dataset_df = context.get("dataset_df_train")
+    if dataset_df is None:
+        dataset_df = context["dataset_df"]
     model_profile = context["model_profile"]
     train_idx = context["train_idx"]
     val_idx = context["val_idx"]
@@ -795,18 +797,33 @@ def visual_violin_pages(context, save_figure):
         axes = np.atleast_1d(axes).flatten()
 
         for j, col in enumerate(chunk):
+            plot_df = dataset_df[["target", col]].copy()
+            y_col = col
+            title = col
+            if str(col).strip().lower() == "isboat":
+                # Affiche isBoat en pourcentage pour rendre la distribution plus lisible.
+                values = pd.to_numeric(plot_df[col], errors="coerce")
+                y_col = "__isboat_pct__"
+                if not values.dropna().empty and ((values.dropna() >= 0) & (values.dropna() <= 1)).all():
+                    plot_df[y_col] = values * 100.0
+                else:
+                    plot_df[y_col] = values
+                title = "isBoat (%)"
+
             sns.violinplot(
-                data=dataset_df,
+                data=plot_df,
                 x="target",
-                y=col,
+                y=y_col,
                 order=target_order,
                 ax=axes[j],
                 inner="box",
                 cut=0,
                 palette="Set2",
             )
-            axes[j].set_title(col, fontsize=10)
+            axes[j].set_title(title, fontsize=10)
             axes[j].set_xlabel("")
+            if str(col).strip().lower() == "isboat":
+                axes[j].set_ylabel("Pourcentage (%)")
 
         for j in range(len(chunk), len(axes)):
             axes[j].set_visible(False)
@@ -1121,6 +1138,44 @@ def _compute_fallback_metrics(model_profile, final_model, X_test_imp, y_test):
     }
 
 
+def _compute_per_class_metrics(model_profile, final_model, X_test_imp, y_test, target_profile=None):
+    if final_model is None or X_test_imp is None or y_test is None:
+        return []
+
+    task_type = str((model_profile or {}).get("task_type", "classification")).lower()
+    if task_type != "classification":
+        return []
+
+    y_pred = final_model.predict(X_test_imp)
+    y_pred = np.asarray(y_pred)
+    if y_pred.ndim > 1 and y_pred.shape[1] > 1:
+        y_pred = np.argmax(y_pred, axis=1)
+    else:
+        y_pred = np.ravel(y_pred)
+
+    labels = _resolve_confusion_labels(y_test, y_pred, target_profile=target_profile)
+    if len(labels) == 0:
+        return []
+
+    precision_vals = precision_score(y_test, y_pred, labels=labels, average=None, zero_division=0)
+    recall_vals = recall_score(y_test, y_pred, labels=labels, average=None, zero_division=0)
+    f1_vals = f1_score(y_test, y_pred, labels=labels, average=None, zero_division=0)
+    support_vals = pd.Series(y_test).value_counts().reindex(labels, fill_value=0).to_numpy(dtype=int)
+
+    rows = []
+    for idx, label in enumerate(labels):
+        rows.append(
+            {
+                "label": str(label),
+                "precision": precision_vals[idx],
+                "recall": recall_vals[idx],
+                "f1": f1_vals[idx],
+                "support": int(support_vals[idx]),
+            }
+        )
+    return rows
+
+
 def visual_metrics_table_page(context, save_figure):
     """Page tableau des metriques d'evaluation (classification/regression, approche A/B)."""
     model_profile = context.get("model_profile") or {}
@@ -1139,10 +1194,89 @@ def visual_metrics_table_page(context, save_figure):
         return
 
     task_type = str(model_profile.get("task_type", "unknown"))
+    is_classif = str(task_type).lower() == "classification"
 
-    rows = [["task_type", task_type]]
+    global_rows = [["task_type", task_type]]
     for key in sorted(metrics.keys()):
-        rows.append([str(key), _format_metric_value(metrics[key])])
+        global_rows.append([str(key), _format_metric_value(metrics[key])])
+
+    if is_classif:
+        per_class_rows = _compute_per_class_metrics(
+            model_profile=model_profile,
+            final_model=context.get("final_model"),
+            X_test_imp=context.get("X_test_imp"),
+            y_test=context.get("y_test"),
+            target_profile=context.get("target_profile"),
+        )
+
+        fig, ax = plt.subplots(figsize=(11.7, 8.3))
+        ax.axis("off")
+        ax.set_title("Tableau des metriques d'evaluation", fontsize=14, fontweight="bold", pad=14)
+
+        global_table = ax.table(
+            cellText=global_rows,
+            colLabels=["Metrique globale", "Valeur"],
+            cellLoc="left",
+            colLoc="left",
+            bbox=[0.10, 0.58, 0.80, 0.32],
+        )
+        global_table.auto_set_font_size(False)
+        global_table.set_fontsize(10.5)
+        global_table.scale(1.0, 1.15)
+
+        for (row, col), cell in global_table.get_celld().items():
+            if row == 0:
+                cell.set_text_props(fontweight="bold")
+                cell.set_facecolor("#e8eefc")
+            elif row % 2 == 0:
+                cell.set_facecolor("#f8f9fc")
+
+        if per_class_rows:
+            class_cell_text = [
+                [
+                    row["label"],
+                    _format_metric_value(row["precision"]),
+                    _format_metric_value(row["recall"]),
+                    _format_metric_value(row["f1"]),
+                    str(row["support"]),
+                ]
+                for row in per_class_rows
+            ]
+
+            ax.text(
+                0.10,
+                0.50,
+                "Metriques par classe (test)",
+                ha="left",
+                va="bottom",
+                fontsize=11,
+                fontweight="bold",
+                transform=ax.transAxes,
+            )
+
+            class_table = ax.table(
+                cellText=class_cell_text,
+                colLabels=["Classe", "Precision", "Recall", "F1", "Support"],
+                cellLoc="left",
+                colLoc="left",
+                bbox=[0.10, 0.10, 0.80, 0.36],
+            )
+            class_table.auto_set_font_size(False)
+            class_table.set_fontsize(10)
+            class_table.scale(1.0, 1.15)
+
+            for (row, col), cell in class_table.get_celld().items():
+                if row == 0:
+                    cell.set_text_props(fontweight="bold")
+                    cell.set_facecolor("#e8eefc")
+                elif row % 2 == 0:
+                    cell.set_facecolor("#f8f9fc")
+
+        fig.tight_layout()
+        save_figure(fig, "evaluation_metrics_table")
+        return
+
+    rows = global_rows
 
     fig, ax = plt.subplots(figsize=(11.7, 8.3))
     ax.axis("off")
@@ -1168,6 +1302,224 @@ def visual_metrics_table_page(context, save_figure):
 
     fig.tight_layout()
     save_figure(fig, "evaluation_metrics_table")
+
+
+def _compute_subject_performance_rows(dataset_df, test_idx, y_test, pred_test, model_profile):
+    test_df = dataset_df.iloc[test_idx].copy().reset_index(drop=True)
+    test_df["y_true"] = y_test
+    test_df["y_pred"] = pred_test
+
+    if "subject_id" not in test_df.columns:
+        return []
+
+    rows = []
+    if model_profile.get("task_type") == "classification":
+        grouped = test_df.groupby("subject_id", observed=True)
+        for subject_id, group in grouped:
+            rows.append(
+                {
+                    "subject_id": str(subject_id),
+                    "n": int(len(group)),
+                    "accuracy": accuracy_score(group["y_true"], group["y_pred"]),
+                    "f1_weighted": f1_score(group["y_true"], group["y_pred"], average="weighted", zero_division=0),
+                }
+            )
+    else:
+        grouped = test_df.groupby("subject_id", observed=True)
+        for subject_id, group in grouped:
+            rows.append(
+                {
+                    "subject_id": str(subject_id),
+                    "n": int(len(group)),
+                    "accuracy": np.nan,
+                    "f1_weighted": np.nan,
+                }
+            )
+
+    rows.sort(key=lambda row: (-row["n"], row["subject_id"]))
+    return rows
+
+
+def visual_subject_window_performance_page(context, save_figure):
+    """Pages montrant la taille des fenetres puis la performance individuelle paginee."""
+    model_profile = context.get("model_profile") or {}
+    dataset_df = context.get("dataset_df_train")
+    if dataset_df is None:
+        dataset_df = context.get("dataset_df")
+    test_idx = context.get("test_idx")
+    y_test = context.get("y_test")
+    final_model = context.get("final_model")
+    X_test_imp = context.get("X_test_imp")
+
+    if dataset_df is None or test_idx is None or y_test is None or final_model is None or X_test_imp is None:
+        return
+    if "subject_id" not in dataset_df.columns:
+        return
+
+    pred_test = final_model.predict(X_test_imp)
+    perf_rows = _compute_subject_performance_rows(dataset_df, test_idx, y_test, pred_test, model_profile)
+    if len(perf_rows) == 0:
+        return
+
+    test_df = dataset_df.iloc[test_idx].copy().reset_index(drop=True)
+    test_df["y_true"] = y_test
+    test_df["y_pred"] = pred_test
+
+    sample_subject = perf_rows[0]["subject_id"]
+    sample_df = test_df[test_df["subject_id"].astype(str) == str(sample_subject)].copy()
+    if sample_df.empty:
+        return
+
+    sort_cols = [c for c in ["window_start", "window_id"] if c in sample_df.columns]
+    if sort_cols:
+        sample_df = sample_df.sort_values(sort_cols).reset_index(drop=True)
+    else:
+        sample_df = sample_df.reset_index(drop=True)
+
+    has_window_bounds = {"window_start", "window_end"}.issubset(set(sample_df.columns))
+    window_duration_s = None
+    if "window_duration_s" in sample_df.columns:
+        try:
+            window_duration_s = float(pd.to_numeric(sample_df["window_duration_s"], errors="coerce").dropna().iloc[0])
+        except Exception:
+            window_duration_s = None
+    if window_duration_s is None and "window_start" in sample_df.columns and "window_end" in sample_df.columns:
+        diff = pd.to_numeric(sample_df["window_end"], errors="coerce") - pd.to_numeric(sample_df["window_start"], errors="coerce")
+        diff = diff.dropna()
+        if len(diff) > 0:
+            window_duration_s = float(diff.iloc[0])
+
+    overlap_s = None
+    if "window_overlap_s" in sample_df.columns:
+        try:
+            overlap_s = float(pd.to_numeric(sample_df["window_overlap_s"], errors="coerce").dropna().iloc[0])
+        except Exception:
+            overlap_s = None
+
+    # Page 1: taille des fenetres sur un participant representatif.
+    fig = plt.figure(figsize=(11.7, 8.3))
+    ax_timeline = fig.add_subplot(111)
+    fig.suptitle("Taille des fenetres (echantillon participant)", fontsize=14, fontweight="bold")
+
+    display_rows = sample_df.head(min(len(sample_df), 18)).copy()
+    if len(display_rows) > 0 and has_window_bounds:
+        def _short_class_label(value):
+            if pd.isna(value):
+                return "NA"
+
+            txt = str(value).strip().lower()
+            if txt in {"low", "l", "0", "0.0"}:
+                return "low"
+            if txt in {"medium", "med", "m", "1", "1.0"}:
+                return "med"
+            if txt in {"high", "h", "2", "2.0"}:
+                return "high"
+            return txt
+
+        y_pos = 10
+        bar_height = 7
+        for _, row in display_rows.iterrows():
+            start = float(row.get("window_start", 0.0))
+            end = float(row.get("window_end", start))
+            width = max(0.0, end - start)
+
+            true_label = _short_class_label(row.get("y_true"))
+            pred_label = _short_class_label(row.get("y_pred"))
+            is_correct = true_label == pred_label and true_label != "NA"
+            bar_color = "#2E8B57" if is_correct else "#C0392B"
+
+            ax_timeline.broken_barh([(start, width)], (y_pos, bar_height), facecolors=bar_color, alpha=0.8)
+
+            window_id = int(row.get("window_id", 0))
+            label = f"W{window_id} : real={true_label} - pred={pred_label}"
+            ax_timeline.text(
+                end + 1.5,
+                y_pos + bar_height / 2.0,
+                label,
+                ha="left",
+                va="center",
+                fontsize=7,
+                color="#1f1f1f",
+            )
+            y_pos += 10
+
+    ax_timeline.set_xlabel("Temps (s)")
+    ax_timeline.set_yticks([])
+    ax_timeline.set_title(
+        f"Echantillon participant {sample_subject} - {len(sample_df)} fenetres"
+        + (f", duree={window_duration_s:.2f}s" if window_duration_s is not None else "")
+        + (f", overlap={overlap_s:.2f}s" if overlap_s is not None else ""),
+        fontsize=11,
+    )
+    legend_handles = [
+        Patch(facecolor="#2E8B57", edgecolor="none", label="Prediction correcte"),
+        Patch(facecolor="#C0392B", edgecolor="none", label="Prediction incorrecte"),
+    ]
+    ax_timeline.legend(handles=legend_handles, loc="upper right", frameon=True, fontsize=9)
+    ax_timeline.grid(axis="x", alpha=0.2)
+    if len(display_rows) > 0 and has_window_bounds:
+        t_min = float(pd.to_numeric(display_rows["window_start"], errors="coerce").min())
+        t_max = float(pd.to_numeric(display_rows["window_end"], errors="coerce").max())
+        if np.isfinite(t_min) and np.isfinite(t_max):
+            ax_timeline.set_xlim(max(0.0, t_min - 0.5), t_max + 35.0)
+    elif len(display_rows) > 0:
+        ax_timeline.text(
+            0.5,
+            0.5,
+            "Fenetrage non detecte (colonnes window_start/window_end absentes)",
+            ha="center",
+            va="center",
+            fontsize=10,
+            transform=ax_timeline.transAxes,
+        )
+
+    fig.tight_layout()
+    save_figure(fig, "subject_window_size")
+
+    # Pages suivantes: performance individuelle paginee.
+    table_df = pd.DataFrame(perf_rows)
+    table_df = table_df[["subject_id", "n", "accuracy", "f1_weighted"]].copy()
+    table_df["accuracy"] = table_df["accuracy"].apply(_format_metric_value)
+    table_df["f1_weighted"] = table_df["f1_weighted"].apply(_format_metric_value)
+
+    output_profile = context.get("output_profile") or {}
+    rows_per_page = int(output_profile.get("performance_rows_per_page", 25) or 25)
+    rows_per_page = max(8, rows_per_page)
+
+    n_pages = math.ceil(len(table_df) / rows_per_page) if len(table_df) > 0 else 0
+    for page_idx in range(n_pages):
+        start = page_idx * rows_per_page
+        end = (page_idx + 1) * rows_per_page
+        page_df = table_df.iloc[start:end].copy()
+
+        fig_page, ax_page = plt.subplots(figsize=(11.7, 8.3))
+        ax_page.axis("off")
+        ax_page.set_title(
+            f"Performance individuelle par participant (page {page_idx + 1}/{n_pages})",
+            fontsize=14,
+            fontweight="bold",
+            pad=14,
+        )
+
+        table = ax_page.table(
+            cellText=page_df.values.tolist(),
+            colLabels=["participant", "n", "accuracy", "f1_weighted"],
+            cellLoc="left",
+            colLoc="left",
+            bbox=[0.06, 0.06, 0.88, 0.86],
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(9)
+        table.scale(1.0, 1.15)
+        for (row, col), cell in table.get_celld().items():
+            if row == 0:
+                cell.set_text_props(fontweight="bold")
+                cell.set_facecolor("#e8eefc")
+            elif row % 2 == 0:
+                cell.set_facecolor("#f8f9fc")
+
+        fig_page.tight_layout()
+        save_figure(fig_page, f"subject_performance_page_{page_idx + 1}")
 
 
 def visual_confusion_matrix_page(context, save_figure):
@@ -1442,6 +1794,7 @@ VISUAL_REPORT_FUNCTIONS = {
     "visual_model_architecture_page": visual_model_architecture_page,
     "visual_split_report": visual_split_report,
     "visual_metrics_table_page": visual_metrics_table_page,
+    "visual_subject_window_performance_page": visual_subject_window_performance_page,
     "visual_confusion_matrix_page": visual_confusion_matrix_page,
     "visual_correlation_pages": visual_correlation_pages,
     "visual_violin_pages": visual_violin_pages,
@@ -1493,6 +1846,8 @@ def export_visual_report(
     final_model=None,
     X_test_imp=None,
     y_test=None,
+    dataset_df_train=None,
+    feature_cols_train=None,
 ):
     """
     Exporte un rapport visuel modulaire compose de visualisations selectionnables.
@@ -1513,6 +1868,8 @@ def export_visual_report(
     final_model               : modele final entraine (optionnel, pour la matrice de confusion)
     X_test_imp                : matrice test imputee (optionnel, pour la matrice de confusion)
     y_test                    : cible test (optionnel, pour la matrice de confusion)
+    dataset_df_train          : dataframe train/fenetre (optionnel, pour pages basees sur split)
+    feature_cols_train        : features train/fenetre (optionnel, reserve compatibilite)
 
     output_profile optionnel :
     visual_report_functions   : "all" ou liste de noms de fonctions de visualisation
@@ -1556,6 +1913,8 @@ def export_visual_report(
     context = {
         "dataset_df": dataset_df,
         "feature_cols": feature_cols,
+        "dataset_df_train": dataset_df_train,
+        "feature_cols_train": feature_cols_train,
         "model_profile": model_profile,
         "output_profile": output_profile,
         "train_idx": train_idx,

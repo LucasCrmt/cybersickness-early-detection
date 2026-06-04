@@ -7,6 +7,7 @@ import scipy.io
 from pipeline.frequential_resampling import (
     apply_lomb_scargle_frequency_sampling,
     apply_uniform_time_step_sampling,
+    _to_seconds,
 )
 
 # MAT helpers
@@ -147,6 +148,229 @@ def load_and_resample_features(data_profile, preprocess_profile=None):
     return df
 
 
+def _resolve_window_duration_seconds(preprocess_profile):
+    duration = preprocess_profile.get("window_duration_s")
+    if duration is None:
+        return None
+
+    duration = float(duration)
+    if duration <= 0:
+        raise ValueError("'window_duration_s' doit etre > 0.")
+    return duration
+
+
+def _resolve_window_overlap_seconds(preprocess_profile, window_duration_s):
+    if preprocess_profile.get("window_overlap_s") is not None:
+        overlap = float(preprocess_profile.get("window_overlap_s"))
+    else:
+        ratio = preprocess_profile.get("window_overlap_ratio")
+        if ratio is None:
+            overlap = 0.0
+        else:
+            ratio = float(ratio)
+            if not 0 <= ratio < 1:
+                raise ValueError("'window_overlap_ratio' doit etre dans [0, 1[.")
+            overlap = float(window_duration_s) * ratio
+
+    if overlap < 0:
+        raise ValueError("'window_overlap_s' doit etre >= 0.")
+    if overlap >= window_duration_s:
+        raise ValueError("'window_overlap_s' doit etre strictement inferieur a 'window_duration_s'.")
+    return overlap
+
+
+def _estimate_sampling_step_seconds(df, preprocess_profile):
+    configured = preprocess_profile.get("uniform_time_step_s")
+    if configured is not None:
+        step = float(configured)
+        if step <= 0:
+            raise ValueError("'uniform_time_step_s' doit etre > 0.")
+        return step
+
+    if "sampling_hz" in df.columns:
+        sampling_hz = pd.to_numeric(df["sampling_hz"], errors="coerce").dropna()
+        if len(sampling_hz) > 0:
+            step = float(1.0 / np.nanmedian(sampling_hz.to_numpy(dtype=float)))
+            if np.isfinite(step) and step > 0:
+                return step
+
+    time_col = preprocess_profile.get("time_col")
+    subject_col = preprocess_profile.get("subject_id_col")
+    if time_col is None or subject_col is None or time_col not in df.columns or subject_col not in df.columns:
+        raise ValueError(
+            "Impossible d'estimer un pas temporel: renseigner 'uniform_time_step_s' ou garder 'time_col'/'subject_id_col'."
+        )
+
+    deltas = []
+    for _, g in df.groupby(subject_col, sort=False):
+        t = pd.to_numeric(g[time_col], errors="coerce").dropna().sort_values().to_numpy(dtype=float)
+        if t.size < 2:
+            continue
+        dt = np.diff(t)
+        dt = dt[(dt > 0) & np.isfinite(dt)]
+        if dt.size > 0:
+            deltas.append(dt)
+
+    if len(deltas) == 0:
+        raise ValueError("Impossible d'estimer un pas temporel pour construire les fenetres.")
+
+    all_dt = np.concatenate(deltas)
+    step = float(np.median(all_dt))
+    if not np.isfinite(step) or step <= 0:
+        raise ValueError("Pas temporel estime invalide.")
+    return step
+
+
+def apply_sliding_window_sequences(df, preprocess_profile):
+    """Decoupe les series temporelles en fenetres chevauchantes et a longueur fixe.
+
+    Chaque fenetre est reconstruite sur une grille reguliere puis aplatie en colonnes
+    de la forme `feature__t0000`, `feature__t0001`, etc. Le retour reste donc un
+    DataFrame tabulaire, mais chaque ligne represente une fenetre temporelle.
+    """
+    if "time_col" not in preprocess_profile:
+        raise ValueError("preprocess_profile doit definir explicitement 'time_col'.")
+    if "subject_id_col" not in preprocess_profile:
+        raise ValueError("preprocess_profile doit definir explicitement 'subject_id_col'.")
+
+    window_duration_s = _resolve_window_duration_seconds(preprocess_profile)
+    if window_duration_s is None:
+        return df
+
+    out = df.copy()
+    time_col = preprocess_profile["time_col"]
+    subject_col = preprocess_profile["subject_id_col"]
+
+    if time_col not in out.columns:
+        raise ValueError(f"Colonne temporelle introuvable: '{time_col}'. Colonnes disponibles: {list(out.columns)}")
+    if subject_col not in out.columns:
+        raise ValueError(f"Colonne subject_id introuvable: '{subject_col}'. Colonnes disponibles: {list(out.columns)}")
+
+    time_unit = str(preprocess_profile.get("time_unit", "s")).strip().lower()
+    out[time_col] = _to_seconds(out[time_col], time_unit=time_unit)
+    out = out.dropna(subset=[time_col]).copy()
+
+    reserved = {
+        "target",
+        "subject_id",
+        "Participant",
+        "participant",
+        "row_id",
+        "window_start",
+        "window_end",
+        "window_center",
+        "window_id",
+        "minute",
+        time_col,
+        "sampling_hz",
+    }
+    explicit_features = preprocess_profile.get("window_feature_cols") or preprocess_profile.get("frequency_feature_cols")
+    if explicit_features is not None:
+        missing = [c for c in explicit_features if c not in out.columns]
+        if missing:
+            raise ValueError(f"Colonnes absentes dans window_feature_cols: {missing}")
+        feature_cols = list(explicit_features)
+    else:
+        feature_cols = [c for c in out.columns if c not in reserved and pd.api.types.is_numeric_dtype(out[c])]
+
+    if len(feature_cols) == 0:
+        raise ValueError("Aucune feature numerique disponible pour le fenetrage temporel.")
+
+    step_s = _estimate_sampling_step_seconds(out, preprocess_profile)
+    window_points = int(round(window_duration_s / step_s))
+    if window_points < 2:
+        raise ValueError("La fenetre calculee contient moins de 2 points. Augmente 'window_duration_s' ou reduis le pas temporel.")
+
+    overlap_s = _resolve_window_overlap_seconds(preprocess_profile, window_duration_s)
+    overlap_points = int(round(overlap_s / step_s))
+    stride_points = max(1, window_points - overlap_points)
+
+    windowed_frames = []
+    for sid, g in out.groupby(subject_col, sort=False):
+        g = g.sort_values(time_col).copy()
+        t = pd.to_numeric(g[time_col], errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(t)
+        if finite.sum() < window_points:
+            continue
+
+        g = g.loc[finite].copy()
+        t = t[finite]
+        order = np.argsort(t)
+        t = t[order]
+        g = g.iloc[order].copy()
+
+        uniq_t, uniq_idx = np.unique(t, return_index=True)
+        if uniq_t.size < window_points:
+            continue
+        g = g.iloc[uniq_idx].copy()
+
+        t_min = float(uniq_t[0])
+        t_max = float(uniq_t[-1])
+        if not np.isfinite(t_min) or not np.isfinite(t_max) or t_max <= t_min:
+            continue
+
+        window_id = 0
+        start = t_min
+        while start + window_duration_s <= t_max + step_s * 0.5:
+            end = start + window_duration_s
+            mask = (t >= start) & (t <= end + step_s * 0.5)
+            if mask.sum() >= window_points:
+                local = g.loc[mask, [time_col] + feature_cols].copy()
+                local[time_col] = pd.to_numeric(local[time_col], errors="coerce")
+                local = local.dropna(subset=[time_col]).sort_values(time_col)
+                local = local.groupby(time_col, as_index=False).mean(numeric_only=True)
+
+                t_local = local[time_col].to_numpy(dtype=float)
+                if t_local.size >= window_points:
+                    t_grid = start + np.arange(window_points, dtype=float) * step_s
+                    row = {
+                        subject_col: sid,
+                        "window_id": window_id,
+                        "window_start": float(start),
+                        "window_end": float(end),
+                        "window_center": float(start + window_duration_s / 2.0),
+                        "window_duration_s": float(window_duration_s),
+                        "window_overlap_s": float(overlap_s),
+                        "sampling_hz": float(1.0 / step_s),
+                        "minute": int(np.floor((start + window_duration_s / 2.0) / 60.0)),
+                    }
+
+                    if "target" in g.columns:
+                        center_t = start + window_duration_s / 2.0
+                        local_target = g.loc[mask, [time_col, "target"]].copy()
+                        local_target[time_col] = pd.to_numeric(local_target[time_col], errors="coerce")
+                        local_target = local_target.dropna(subset=[time_col, "target"]).sort_values(time_col)
+                        if not local_target.empty:
+                            nearest_idx = (local_target[time_col] - center_t).abs().idxmin()
+                            row["target"] = local_target.loc[nearest_idx, "target"]
+                        else:
+                            # Fallback robuste: premiere valeur cible disponible sur le sujet.
+                            subj_target = pd.Series(g.get("target")).dropna()
+                            if len(subj_target) > 0:
+                                row["target"] = subj_target.iloc[0]
+
+                    for feat in feature_cols:
+                        y = pd.to_numeric(local[feat], errors="coerce").to_numpy(dtype=float)
+                        good = np.isfinite(y)
+                        if good.sum() < 2:
+                            values = np.full(window_points, np.nan, dtype=float)
+                        else:
+                            values = np.interp(t_grid, t_local[good], y[good])
+
+                        for step_idx, value in enumerate(values):
+                            row[f"{feat}__t{step_idx:04d}"] = float(value)
+
+                    windowed_frames.append(row)
+                    window_id += 1
+
+            start += stride_points * step_s
+
+    if len(windowed_frames) == 0:
+        raise ValueError("Le fenetrage temporel n'a produit aucune fenetre exploitable.")
+
+    return pd.DataFrame(windowed_frames)
+
+
 def load_features_for_approach(data_profile, preprocess_profile=None, verbose=True):
     """Charge les features selon l'approche (A/B) et le mode de reechantillonnage.
 
@@ -155,6 +379,9 @@ def load_features_for_approach(data_profile, preprocess_profile=None, verbose=Tr
     - Approche B + use_frequency_resampling=True + frequency_sampling_hz défini :
       chargement puis reechantillonnage Lomb-Scargle
     - Approche B sans reechantillonnage : chargement CSV standard en conservant la dimension temporelle
+        - Si 'window_duration_s' est defini, le fenetrage peut etre effectue a l'etape
+            extract (window_stage='extract') ou differe au post-pretraitement
+            (window_stage='post_preprocess', valeur par defaut).
     """
     preprocess_profile = preprocess_profile or {}
     approach = str(preprocess_profile.get("approach", "A")).strip().upper()
@@ -172,11 +399,29 @@ def load_features_for_approach(data_profile, preprocess_profile=None, verbose=Tr
                     print("Approche B activee avec uniformisation du pas temporel sur les donnees brutes.")
                 else:
                     print("Approche B activee avec frequency sampling (Lomb-Scargle) sur les donnees brutes.")
-            return load_and_resample_features(data_profile, preprocess_profile)
+            df = load_and_resample_features(data_profile, preprocess_profile)
+        else:
+            if verbose:
+                print("Approche B activee sans reechantillonnage: series temporelles brutes conservees.")
+            df = load_csv_features(data_profile)
 
-        if verbose:
-            print("Approche B activee sans reechantillonnage: series temporelles brutes conservees.")
-        return load_csv_features(data_profile)
+        window_stage = str(preprocess_profile.get("window_stage", "post_preprocess")).strip().lower()
+        if preprocess_profile.get("window_duration_s") is not None and window_stage == "extract":
+            if verbose:
+                overlap_desc = preprocess_profile.get("window_overlap_s")
+                if overlap_desc is None and preprocess_profile.get("window_overlap_ratio") is not None:
+                    overlap_desc = f"ratio={preprocess_profile.get('window_overlap_ratio')}"
+                print(
+                    "Fenetrage temporel active: ",
+                    f"window_duration_s={preprocess_profile.get('window_duration_s')}",
+                    f", overlap={overlap_desc if overlap_desc is not None else 0}",
+                )
+            return apply_sliding_window_sequences(df, preprocess_profile)
+
+        if preprocess_profile.get("window_duration_s") is not None and window_stage != "extract" and verbose:
+            print("Fenetrage differe: il sera applique apres le pretraitement (window_stage='post_preprocess').")
+
+        return df
 
     if verbose:
         print("Approche A activee: chargement tabulaire standard.")

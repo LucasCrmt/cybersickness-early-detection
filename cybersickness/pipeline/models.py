@@ -95,7 +95,7 @@ def get_search_space(task_type, model_profile=None):
     # Modèles approche B - séries temporelles
     if mt == "cnn_1d":
         return {
-            "filters": [32, 64],
+            "filters": [2, 3],
             "kernel_size": [3, 5],
             "dropout_rate": [0.2, 0.4],
             "learning_rate": [0.001, 0.01],
@@ -104,7 +104,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "inception_time":
         return {
-            "filters": [32, 64],
+            "filters": [2, 3],
             "depth": [2, 3],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.005],
@@ -113,7 +113,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "bilstm":
         return {
-            "units": [32, 64],
+            "units": [4, 8],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.01],
             "batch_size": [16, 32],
@@ -121,7 +121,7 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "cnn_lstm":
         return {
-            "cnn_filters": [32, 64],
+            "cnn_filters": [2, 3],
             "cnn_kernel": [3, 5],
             "lstm_units": [32, 64],
             "dropout_rate": [0.2, 0.3],
@@ -172,7 +172,7 @@ def _build_cnn_1d(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN 1D.")
     
-    filters = params.get("filters", 32)
+    filters = params.get("filters", 3)
     kernel_size = params.get("kernel_size", 3)
     dropout_rate = params.get("dropout_rate", 0.2)
     
@@ -196,7 +196,7 @@ def _build_inception_time(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser InceptionTime.")
     
-    filters = params.get("filters", 32)
+    filters = params.get("filters", 3)
     depth = params.get("depth", 2)
     dropout_rate = params.get("dropout_rate", 0.2)
     
@@ -235,10 +235,27 @@ def _build_bilstm(input_shape, output_shape, is_classif, params):
     
     units = params.get("units", 32)
     dropout_rate = params.get("dropout_rate", 0.2)
+    # recurrent_dropout > 0 force une implementation LSTM non-CuDNN,
+    # necessaire pour eviter l'op CudnnRNN indisponible sous DirectML.
+    recurrent_dropout_rate = params.get("recurrent_dropout", 0.1)
     
     model = Sequential([
-        Bidirectional(LSTM(units, return_sequences=True, dropout=dropout_rate), input_shape=input_shape),
-        Bidirectional(LSTM(units, dropout=dropout_rate)),
+        Bidirectional(
+            LSTM(
+                units,
+                return_sequences=True,
+                dropout=dropout_rate,
+                recurrent_dropout=recurrent_dropout_rate,
+            ),
+            input_shape=input_shape,
+        ),
+        Bidirectional(
+            LSTM(
+                units,
+                dropout=dropout_rate,
+                recurrent_dropout=recurrent_dropout_rate,
+            )
+        ),
         Dense(64, activation='relu'),
         Dropout(dropout_rate),
         Dense(output_shape, activation='softmax' if is_classif else 'linear')
@@ -251,10 +268,13 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser CNN-LSTM.")
     
-    cnn_filters = params.get("cnn_filters", 32)
+    cnn_filters = params.get("cnn_filters", 3)
     cnn_kernel = params.get("cnn_kernel", 3)
     lstm_units = params.get("lstm_units", 32)
     dropout_rate = params.get("dropout_rate", 0.2)
+    # recurrent_dropout > 0 force une implementation LSTM non-CuDNN,
+    # necessaire pour eviter l'op CudnnRNN indisponible sous DirectML.
+    recurrent_dropout_rate = params.get("recurrent_dropout", 0.1)
     
     model = Sequential([
         Conv1D(cnn_filters, cnn_kernel, activation='relu', padding='same', input_shape=input_shape),
@@ -263,7 +283,12 @@ def _build_cnn_lstm(input_shape, output_shape, is_classif, params):
         Conv1D(cnn_filters * 2, cnn_kernel, activation='relu', padding='same'),
         BatchNormalization(),
         Dropout(dropout_rate),
-        LSTM(lstm_units, return_sequences=False, dropout=dropout_rate),
+        LSTM(
+            lstm_units,
+            return_sequences=False,
+            dropout=dropout_rate,
+            recurrent_dropout=recurrent_dropout_rate,
+        ),
         Dense(64, activation='relu'),
         Dropout(dropout_rate),
         Dense(output_shape, activation='softmax' if is_classif else 'linear')

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt
+from pipeline.extract import apply_sliding_window_sequences
 
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
@@ -307,6 +308,35 @@ def apply_column_aggregations(df, preprocess_profile):
 
     out = df.copy()
 
+    def _resolve_exact_or_windowed_columns(raw_col_name):
+        """Retourne soit une colonne exacte, soit un mapping step->colonne pour les colonnes fenetrees."""
+        if raw_col_name in out.columns:
+            return {"kind": "exact", "column": raw_col_name}
+
+        key = str(raw_col_name).strip().lower()
+        exact_matches = [c for c in out.columns if str(c).strip().lower() == key]
+        if len(exact_matches) > 0:
+            return {"kind": "exact", "column": exact_matches[0]}
+
+        prefix = f"{key}__t"
+        step_map = {}
+        for c in out.columns:
+            c_norm = str(c).strip().lower()
+            if not c_norm.startswith(prefix):
+                continue
+            parts = str(c).rsplit("__t", 1)
+            if len(parts) != 2:
+                continue
+            step_part = parts[1]
+            if not str(step_part).isdigit():
+                continue
+            step_map[int(step_part)] = c
+
+        if len(step_map) > 0:
+            return {"kind": "windowed", "step_map": step_map}
+
+        return {"kind": "missing", "column": raw_col_name}
+
     for result_col, spec in aggregations.items():
         cols_to_merge = spec.get("columns", [])
         strategy = spec.get("strategy", "mean")
@@ -319,31 +349,72 @@ def apply_column_aggregations(df, preprocess_profile):
                 f"Recu: {len(cols_to_merge)}"
             )
 
-        missing = [c for c in cols_to_merge if c not in out.columns]
+        resolved = [_resolve_exact_or_windowed_columns(c) for c in cols_to_merge]
+        kinds = {item["kind"] for item in resolved}
+
+        if kinds == {"exact"}:
+            resolved_cols = [item["column"] for item in resolved]
+            subset = out[resolved_cols].apply(pd.to_numeric, errors="coerce")
+
+            if strategy == "mean":
+                out[result_col] = subset.mean(axis=1)
+            elif strategy == "min":
+                out[result_col] = subset.min(axis=1)
+            elif strategy == "max":
+                out[result_col] = subset.max(axis=1)
+            elif strategy == "std":
+                out[result_col] = subset.std(axis=1)
+            elif strategy == "sum":
+                out[result_col] = subset.sum(axis=1)
+            else:
+                raise ValueError(
+                    f"column_aggregations['{result_col}']: stratégie inconnue '{strategy}'. "
+                    f"Stratégies supportées: mean, min, max, std, sum"
+                )
+            continue
+
+        if kinds == {"windowed"}:
+            step_sets = [set(item["step_map"].keys()) for item in resolved]
+            common_steps = sorted(set.intersection(*step_sets)) if len(step_sets) > 0 else []
+            if len(common_steps) == 0:
+                raise ValueError(
+                    f"column_aggregations['{result_col}']: aucune etape temporelle commune trouvee "
+                    f"pour les colonnes {cols_to_merge}."
+                )
+
+            for step in common_steps:
+                step_cols = [item["step_map"][step] for item in resolved]
+                subset = out[step_cols].apply(pd.to_numeric, errors="coerce")
+                target_col = f"{result_col}__t{int(step):04d}"
+
+                if strategy == "mean":
+                    out[target_col] = subset.mean(axis=1)
+                elif strategy == "min":
+                    out[target_col] = subset.min(axis=1)
+                elif strategy == "max":
+                    out[target_col] = subset.max(axis=1)
+                elif strategy == "std":
+                    out[target_col] = subset.std(axis=1)
+                elif strategy == "sum":
+                    out[target_col] = subset.sum(axis=1)
+                else:
+                    raise ValueError(
+                        f"column_aggregations['{result_col}']: stratégie inconnue '{strategy}'. "
+                        f"Stratégies supportées: mean, min, max, std, sum"
+                    )
+            continue
+
+        missing = [item["column"] for item in resolved if item["kind"] == "missing"]
         if missing:
             raise ValueError(
                 f"column_aggregations['{result_col}']: colonnes absentes: {missing}. "
                 f"Colonnes disponibles: {list(out.columns)}"
             )
 
-        # Extraire et convertir en numériques
-        subset = out[cols_to_merge].apply(pd.to_numeric, errors="coerce")
-
-        if strategy == "mean":
-            out[result_col] = subset.mean(axis=1)
-        elif strategy == "min":
-            out[result_col] = subset.min(axis=1)
-        elif strategy == "max":
-            out[result_col] = subset.max(axis=1)
-        elif strategy == "std":
-            out[result_col] = subset.std(axis=1)
-        elif strategy == "sum":
-            out[result_col] = subset.sum(axis=1)
-        else:
-            raise ValueError(
-                f"column_aggregations['{result_col}']: stratégie inconnue '{strategy}'. "
-                f"Stratégies supportées: mean, min, max, std, sum"
-            )
+        raise ValueError(
+            f"column_aggregations['{result_col}']: melange non supporte de colonnes brutes et fenetrees. "
+            f"Colonnes demandees: {cols_to_merge}"
+        )
 
     return out
 
@@ -389,6 +460,42 @@ def apply_target_discretization(df, target_profile):
         out = out.dropna(subset=["target"])
         return out
 
+    method = str(disc.get("method", "bins")).strip().lower()
+    target_num = pd.to_numeric(out["target"], errors="coerce")
+
+    if method in {"quantile", "quantiles", "qcut"}:
+        labels = disc.get("labels", ["low", "medium", "high"])
+        quantiles = disc.get("quantiles")
+
+        if quantiles is None:
+            n_classes = int(disc.get("n_classes", len(labels)))
+            if n_classes < 2:
+                raise ValueError("discretize['n_classes'] doit etre >= 2 pour un decoupage par quantiles.")
+            quantiles = np.linspace(0.0, 1.0, n_classes + 1).tolist()
+
+        quantiles = [float(qv) for qv in quantiles]
+        if len(quantiles) < 3:
+            raise ValueError("discretize['quantiles'] doit contenir au moins 3 bornes (ex: [0, 0.33, 0.66, 1]).")
+        if abs(quantiles[0]) > 1e-12 or abs(quantiles[-1] - 1.0) > 1e-12:
+            raise ValueError("discretize['quantiles'] doit commencer a 0 et finir a 1.")
+        if any(q2 <= q1 for q1, q2 in zip(quantiles[:-1], quantiles[1:])):
+            raise ValueError("discretize['quantiles'] doit etre strictement croissant.")
+
+        if len(labels) != len(quantiles) - 1:
+            raise ValueError(
+                f"'labels' doit avoir exactement {len(quantiles) - 1} elements pour {len(quantiles)} quantiles. "
+                f"Recu: {len(labels)} labels."
+            )
+
+        # Utilise le rang pour rendre qcut robuste aux nombreuses valeurs identiques.
+        ranked = target_num.rank(method="first")
+        out["target"] = pd.qcut(ranked, q=quantiles, labels=labels)
+        out = out.dropna(subset=["target"])
+        return out
+
+    if method != "bins":
+        raise ValueError("discretize['method'] doit etre 'bins' (defaut) ou 'quantile'.")
+
     bins = disc["bins"]
     labels = disc["labels"]
 
@@ -399,7 +506,7 @@ def apply_target_discretization(df, target_profile):
         )
 
     out["target"] = pd.cut(
-        pd.to_numeric(out["target"], errors="coerce"),
+        target_num,
         bins=bins,
         labels=labels,
         include_lowest=True,
@@ -419,7 +526,20 @@ def apply_preprocess(df, preprocess_profile):
         out = out[out["n_valid_features"] >= preprocess_profile.get("min_valid_features", 1)].copy()
 
     # Exclusions de base + exclusions configurees (insensibles a la casse)
-    base_excluded = {"target", "subject_id", "row_id", "window_start", "window_end", "minute"}
+    base_excluded = {
+        "target",
+        "subject_id",
+        "row_id",
+        "time",
+        "minute",
+        "sampling_hz",
+        "window_start",
+        "window_end",
+        "window_center",
+        "window_id",
+        "window_duration_s",
+        "window_overlap_s",
+    }
     configured_excluded = set(preprocess_profile.get("exclude_features", []))
     excluded_norm = {str(c).strip().lower() for c in (base_excluded | configured_excluded)}
 
@@ -474,6 +594,37 @@ def apply_preprocess(df, preprocess_profile):
 
     # Approche B: filtres temporels optionnels sur la dimension temporelle.
     out = _apply_temporal_filters(out, feature_cols, preprocess_profile)
+
+    # Fenetrage temporel post-pretraitement (par defaut), afin que include_features,
+    # aggregations, clipping et filtrage s'appliquent sur les colonnes brutes.
+    approach = str(preprocess_profile.get("approach", "A")).strip().upper()
+    window_duration_s = preprocess_profile.get("window_duration_s")
+    window_stage = str(preprocess_profile.get("window_stage", "post_preprocess")).strip().lower()
+    if approach == "B" and window_duration_s is not None and window_stage != "extract":
+        window_profile = dict(preprocess_profile)
+        window_profile["window_feature_cols"] = list(feature_cols)
+        out = apply_sliding_window_sequences(out, window_profile)
+
+        # Reconstruit la liste de features fenetrees dans l'ordre step puis feature.
+        step_map = {}
+        for col in out.columns:
+            if "__t" not in str(col):
+                continue
+            base, step_part = str(col).rsplit("__t", 1)
+            if not str(step_part).isdigit():
+                continue
+            step = int(step_part)
+            if base not in step_map:
+                step_map[base] = set()
+            step_map[base].add(step)
+
+        windowed_feature_cols = []
+        for step in sorted({s for steps in step_map.values() for s in steps}):
+            for base in feature_cols:
+                candidate = f"{base}__t{step:04d}"
+                if candidate in out.columns:
+                    windowed_feature_cols.append(candidate)
+        feature_cols = windowed_feature_cols
 
     return out, feature_cols
 
