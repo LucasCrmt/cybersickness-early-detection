@@ -5,7 +5,7 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import f1_score, mean_squared_error
 from sklearn.model_selection import ParameterGrid
 
-from .models import _XGBClassifierWrapper, build_model, get_search_space
+from .models import build_model, get_search_space
 
 _DEEP_MODEL_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
 
@@ -180,32 +180,73 @@ def make_meta_features(stream_models, stream_map, X, feature_cols, is_classifica
     return np.hstack(parts)
 
 
-def build_meta_model(fusion_profile, task_type, seed=42):
+_CLASSICAL_META_TYPES = {"logistic_regression", "random_forest", "svm", "xgboost"}
+_DEEP_META_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
+
+
+class _DeepMetaWrapper:
+    """Adapte un KerasSklearnWrapper pour des entrées 2D (méta-features plates).
+
+    Les modèles deep attendent (n, T, features). Le méta-vecteur est 2D (n, k).
+    Ce wrapper reshape automatiquement vers (n, k, 1) avant chaque appel.
+    """
+
+    def __init__(self, model):
+        self._model = model
+
+    def _reshape(self, X):
+        return X.reshape(len(X), X.shape[1], 1)
+
+    def fit(self, X, y):
+        self._model.fit(self._reshape(X), y)
+        return self
+
+    def predict(self, X):
+        return self._model.predict(self._reshape(X))
+
+    def predict_proba(self, X):
+        return self._model.predict_proba(self._reshape(X))
+
+    @property
+    def classes_(self):
+        return getattr(self._model, "classes_", None)
+
+
+def build_meta_model(fusion_profile, task_type, seed=42, n_meta_features=None, n_classes=None):
     """Construit le méta-modèle (dernière couche de fusion).
 
-    Options meta_model : logistic_regression / random_forest / svm / xgboost
+    Options meta_model : logistic_regression / ridge /
+                         random_forest / svm / xgboost (approche A)
+                         cnn_1d / inception_time / bilstm / cnn_lstm / td_cnn_lstm (approche B)
     """
-    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-    from sklearn.svm import SVC, SVR
-    from xgboost import XGBRegressor
-
     meta_type = fusion_profile.get("meta_model", "logistic_regression")
     is_classif = task_type == "classification"
 
-    if meta_type == "random_forest":
-        if is_classif:
-            return RandomForestClassifier(n_estimators=200, random_state=seed, class_weight="balanced", n_jobs=-1)
-        return RandomForestRegressor(n_estimators=200, random_state=seed, n_jobs=-1)
+    if meta_type in _DEEP_META_TYPES:
+        if n_meta_features is None:
+            raise ValueError("n_meta_features requis pour un méta-modèle deep learning.")
+        meta_profile = {
+            "model_type": meta_type,
+            "task_type": task_type,
+            "n_classes": n_classes or 3,
+            "random_state": seed,
+        }
+        params = {"sequence_length": n_meta_features, "n_features": 1}
+        return _DeepMetaWrapper(build_model(params, meta_profile))
 
-    if meta_type == "svm":
-        if is_classif:
-            return SVC(kernel="rbf", class_weight="balanced")
-        return SVR(kernel="rbf")
-
-    if meta_type == "xgboost":
-        if is_classif:
-            return _XGBClassifierWrapper(n_estimators=100, random_state=seed, eval_metric="logloss")
-        return XGBRegressor(n_estimators=100, random_state=seed)
+    if meta_type in _CLASSICAL_META_TYPES - {"logistic_regression"}:
+        meta_profile = {
+            "model_type": meta_type,
+            "task_type": task_type,
+            "random_state": seed,
+            "class_weight": "balanced" if is_classif else None,
+        }
+        if meta_type == "random_forest":
+            return build_model({"n_estimators": 200}, meta_profile)
+        if meta_type == "svm":
+            return build_model({"kernel": "rbf"}, meta_profile)
+        if meta_type == "xgboost":
+            return build_model({"n_estimators": 100}, meta_profile)
 
     # logistic_regression (defaut classif) / ridge (defaut regression)
     if is_classif:
