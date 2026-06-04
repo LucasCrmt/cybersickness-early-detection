@@ -434,6 +434,32 @@ def apply_target_discretization(df, target_profile):
     if disc is None:
         return out
 
+    # Mode quartile: bornes calculées sur la distribution réelle.
+    # Les N labels définissent N classes aux quantiles 0, 1/N, 2/N, ..., 1.
+    if disc.get("mode") == "quartile":
+        labels = disc.get("labels", ["none", "low", "medium", "high"])
+        n = len(labels)
+        target_num = pd.to_numeric(out["target"], errors="coerce")
+        valid = target_num.dropna()
+        quantile_pts = np.linspace(0.0, 1.0, n + 1)
+        raw_bins = [float(valid.quantile(p)) for p in quantile_pts]
+        raw_bins[0] -= 1e-9
+        raw_bins[-1] += 1e-9
+        if len(set(round(b, 9) for b in raw_bins)) < len(raw_bins):
+            raise ValueError(
+                f"Discrétisation quartile impossible: bins dupliqués {raw_bins}. "
+                f"La distribution cible n'a pas assez de valeurs distinctes pour {n} classes."
+            )
+        out["target"] = pd.cut(
+            target_num,
+            bins=raw_bins,
+            labels=labels,
+            include_lowest=True,
+            right=True,
+        )
+        out = out.dropna(subset=["target"])
+        return out
+
     method = str(disc.get("method", "bins")).strip().lower()
     target_num = pd.to_numeric(out["target"], errors="coerce")
 
