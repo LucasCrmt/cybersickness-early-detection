@@ -1550,6 +1550,66 @@ def visual_confusion_matrix_page(context, save_figure):
     save_figure(fig, "confusion_matrix")
 
 
+def visual_multistream_feature_split_page(context, save_figure):
+    """Page tableau eye/head uniquement pour le modèle multistream."""
+    model_profile = context.get("model_profile") or {}
+    feature_cols = context.get("feature_cols") or []
+
+    if str(model_profile.get("model_type", "")).lower() != "multistream":
+        return
+    if not feature_cols:
+        return
+
+    n_eye = int(model_profile.get("n_eye_features", 3))
+    eye_cols  = [c for c in feature_cols[:n_eye]]
+    head_cols = [c for c in feature_cols[n_eye:]]
+    n_rows = max(len(eye_cols), len(head_cols))
+
+    cell_text = [
+        [
+            eye_cols[i]  if i < len(eye_cols)  else "",
+            head_cols[i] if i < len(head_cols) else "",
+        ]
+        for i in range(n_rows)
+    ]
+
+    fig, ax = plt.subplots(figsize=(11.7, max(4.0, n_rows * 0.42 + 2.5)))
+    ax.axis("off")
+    ax.set_title(
+        f"Séparation des flux de features pour le modèle multistream "
+        f"({len(eye_cols)} features eye / {len(head_cols)} features head)",
+        fontsize=13,
+        fontweight="bold",
+        pad=14,
+    )
+
+    table = ax.table(
+        cellText=cell_text,
+        colLabels=[
+            f"Branche Eye  (×{len(eye_cols)})",
+            f"Branche Head  (×{len(head_cols)})",
+        ],
+        cellLoc="left",
+        colLoc="left",
+        bbox=[0.08, 0.04, 0.84, 0.88],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10.5)
+    table.scale(1.0, 1.3)
+
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(fontweight="bold")
+            cell.set_facecolor("#D4EDDA" if col == 0 else "#D1ECF1")
+        elif col == 0:
+            cell.set_facecolor("#f0faf2" if row % 2 == 0 else "#ffffff")
+        else:
+            cell.set_facecolor("#f0f8fb" if row % 2 == 0 else "#ffffff")
+
+    fig.tight_layout()
+    save_figure(fig, "multistream_feature_split")
+
+
 def visual_temporal_fft_by_feature_pages(context, save_figure):
     """Trace des FFT par feature (avant/apres) pour un sujet representatif."""
     raw_df = context["raw_df"]
@@ -1792,6 +1852,7 @@ VISUAL_REPORT_FUNCTIONS = {
     "visual_cover_page": visual_cover_page,
     "visual_hypothesis_page": visual_hypothesis_page,
     "visual_model_architecture_page": visual_model_architecture_page,
+    "visual_multistream_feature_split_page": visual_multistream_feature_split_page,
     "visual_split_report": visual_split_report,
     "visual_metrics_table_page": visual_metrics_table_page,
     "visual_subject_window_performance_page": visual_subject_window_performance_page,
