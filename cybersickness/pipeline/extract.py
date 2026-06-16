@@ -585,33 +585,52 @@ def load_per_minute_targets(target_profile):
     Utile pour les pipelines sur données brutes où les features sont construites
     séparément (ex: segmentation par minute).
 
+    Supporte target_mode='per_minute' et target_mode='fixed_minute'.
+    Pour 'fixed_minute', la cible unique par sujet est broadcastée sur toutes
+    les minutes déclarées dans minute_columns, afin que segment_sequences_sliding_window
+    puisse associer chaque fenêtre à la bonne cible.
+
     Returns:
         DataFrame avec colonnes [subject_id, minute, target] après discretisation
         si configurée dans target_profile.
     """
     source = target_profile["source"]
     target_mode = target_profile.get("target_mode", "per_minute")
-    if target_mode != "per_minute":
-        raise ValueError(
-            "load_per_minute_targets requiert target_mode='per_minute' dans TARGET_PROFILE."
-        )
 
     if source == "xlsx":
         xlsx_path = target_profile["xlsx_path"]
         if not os.path.exists(xlsx_path):
             raise FileNotFoundError(f"Fichier cible introuvable: {xlsx_path}")
-        target_df = pd.read_excel(xlsx_path, sheet_name=target_profile.get("sheet_name", 0))
+        raw_df = pd.read_excel(xlsx_path, sheet_name=target_profile.get("sheet_name", 0))
     elif source == "csv":
         csv_path = target_profile["csv_path"]
         if not os.path.exists(csv_path):
             raise FileNotFoundError(f"Fichier cible introuvable: {csv_path}")
-        target_df = pd.read_csv(csv_path)
+        raw_df = pd.read_csv(csv_path)
     else:
         raise ValueError("load_per_minute_targets supporte uniquement 'xlsx' et 'csv'.")
 
-    t = _build_target_table(target_df, target_profile)
-    t["subject_id"] = t["subject_id"].astype(str).str.strip()
-    return t
+    if target_mode == "per_minute":
+        t = _build_target_table(raw_df, target_profile)
+        t["subject_id"] = t["subject_id"].astype(str).str.strip()
+        return t
+
+    if target_mode == "fixed_minute":
+        # Obtenir une cible unique par sujet via _build_target_table (retourne [subject_id, target])
+        t = _build_target_table(raw_df, target_profile)
+        t["subject_id"] = t["subject_id"].astype(str).str.strip()
+        # Broadcaster sur toutes les minutes déclarées
+        minutes = [int(m) for m in target_profile.get("minute_columns", list(range(1, 15)))]
+        rows = []
+        for _, row in t.iterrows():
+            for m in minutes:
+                rows.append({"subject_id": row["subject_id"], "minute": m, "target": row["target"]})
+        return pd.DataFrame(rows)[["subject_id", "minute", "target"]]
+
+    raise ValueError(
+        f"load_per_minute_targets supporte target_mode 'per_minute' et 'fixed_minute', "
+        f"reçu: '{target_mode}'."
+    )
 
 
 def add_target(features_df, target_profile):
