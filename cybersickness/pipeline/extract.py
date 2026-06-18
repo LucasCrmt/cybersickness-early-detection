@@ -382,7 +382,39 @@ def load_features_for_approach(data_profile, preprocess_profile=None, verbose=Tr
         - Si 'window_duration_s' est defini, le fenetrage peut etre effectue a l'etape
             extract (window_stage='extract') ou differe au post-pretraitement
             (window_stage='post_preprocess', valeur par defaut).
+
+    data_source (dans data_profile) :
+    - "phase1" (défaut) : charge file_path uniquement (comportement historique).
+    - "phase2"          : charge file_path_phase2 à la place de file_path.
+    - "both"            : charge les deux, ajoute le suffixe _P1/_P2 aux subject_id,
+                          concatène. Activer group_split_by_root_subject dans model_profile
+                          pour éviter la fuite inter-phases lors du split inter-individuel.
     """
+    data_source = str(data_profile.get("data_source", "phase1")).strip().lower()
+
+    if data_source == "both":
+        fp2 = data_profile.get("file_path_phase2")
+        if not fp2:
+            raise ValueError("data_profile['file_path_phase2'] requis quand data_source='both'.")
+        dp1 = {**data_profile, "data_source": "phase1"}
+        dp2 = {**data_profile, "data_source": "phase2", "file_path": fp2}
+        if verbose:
+            print("data_source='both' : chargement phase 1 + phase 2 avec suffixe _P1/_P2.")
+        df1 = load_features_for_approach(dp1, preprocess_profile, verbose=verbose)
+        df2 = load_features_for_approach(dp2, preprocess_profile, verbose=False)
+        df1["subject_id"] = df1["subject_id"].astype(str) + "_P1"
+        df2["subject_id"] = df2["subject_id"].astype(str) + "_P2"
+        max_row = int(df1["row_id"].max()) + 1 if len(df1) else 0
+        df2["row_id"] = df2["row_id"] + max_row
+        return pd.concat([df1, df2], ignore_index=True)
+
+    if data_source == "phase2":
+        fp2 = data_profile.get("file_path_phase2")
+        if not fp2:
+            raise ValueError("data_profile['file_path_phase2'] requis quand data_source='phase2'.")
+        dp2 = {**data_profile, "file_path": fp2, "data_source": "phase1"}
+        return load_features_for_approach(dp2, preprocess_profile, verbose=verbose)
+
     preprocess_profile = preprocess_profile or {}
     approach = str(preprocess_profile.get("approach", "A")).strip().upper()
     if approach not in {"A", "B"}:
@@ -590,10 +622,49 @@ def load_per_minute_targets(target_profile):
     les minutes déclarées dans minute_columns, afin que segment_sequences_sliding_window
     puisse associer chaque fenêtre à la bonne cible.
 
+    data_source (dans target_profile) :
+    - "phase1" (défaut) : charge xlsx_path / csv_path uniquement.
+    - "phase2"          : charge xlsx_path_phase2 à la place.
+    - "both"            : charge les deux, ajoute les suffixes _P1/_P2 aux subject_id,
+                          concatène — la discrétisation est appliquée phase par phase.
+
     Returns:
         DataFrame avec colonnes [subject_id, minute, target] après discretisation
         si configurée dans target_profile.
     """
+    data_source = str(target_profile.get("data_source", "phase1")).strip().lower()
+
+    if data_source == "both":
+        xp2 = target_profile.get("xlsx_path_phase2") or target_profile.get("csv_path_phase2")
+        if not xp2:
+            raise ValueError(
+                "target_profile['xlsx_path_phase2'] (ou 'csv_path_phase2') requis quand data_source='both'."
+            )
+        tp1 = {**target_profile, "data_source": "phase1"}
+        tp2 = {**target_profile, "data_source": "phase2"}
+        if target_profile.get("source") == "xlsx":
+            tp2["xlsx_path"] = xp2
+        else:
+            tp2["csv_path"] = xp2
+        t1 = load_per_minute_targets(tp1)
+        t2 = load_per_minute_targets(tp2)
+        t1["subject_id"] = t1["subject_id"].astype(str) + "_P1"
+        t2["subject_id"] = t2["subject_id"].astype(str) + "_P2"
+        return pd.concat([t1, t2], ignore_index=True)
+
+    if data_source == "phase2":
+        xp2 = target_profile.get("xlsx_path_phase2") or target_profile.get("csv_path_phase2")
+        if not xp2:
+            raise ValueError(
+                "target_profile['xlsx_path_phase2'] (ou 'csv_path_phase2') requis quand data_source='phase2'."
+            )
+        tp2 = {**target_profile, "data_source": "phase1"}
+        if target_profile.get("source") == "xlsx":
+            tp2["xlsx_path"] = xp2
+        else:
+            tp2["csv_path"] = xp2
+        return load_per_minute_targets(tp2)
+
     source = target_profile["source"]
     target_mode = target_profile.get("target_mode", "per_minute")
 
@@ -616,10 +687,8 @@ def load_per_minute_targets(target_profile):
         return t
 
     if target_mode == "fixed_minute":
-        # Obtenir une cible unique par sujet via _build_target_table (retourne [subject_id, target])
         t = _build_target_table(raw_df, target_profile)
         t["subject_id"] = t["subject_id"].astype(str).str.strip()
-        # Broadcaster sur toutes les minutes déclarées
         minutes = [int(m) for m in target_profile.get("minute_columns", list(range(1, 15)))]
         rows = []
         for _, row in t.iterrows():
