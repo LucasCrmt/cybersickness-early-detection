@@ -626,7 +626,7 @@ def load_per_minute_targets(target_profile):
     - "phase1" (défaut) : charge xlsx_path / csv_path uniquement.
     - "phase2"          : charge xlsx_path_phase2 à la place.
     - "both"            : charge les deux, ajoute les suffixes _P1/_P2 aux subject_id,
-                          concatène — la discrétisation est appliquée phase par phase.
+                          concatène - la discrétisation est appliquée phase par phase.
 
     Returns:
         DataFrame avec colonnes [subject_id, minute, target] après discretisation

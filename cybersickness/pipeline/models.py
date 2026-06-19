@@ -23,7 +23,7 @@ except ImportError:
     TF_AVAILABLE = False
 
 _VALID_MODEL_TYPES = {
-    "random_forest", "xgboost",
+    "random_forest", "xgboost", "svm",
     "cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm",
     "multistream",   # fusion end-to-end deux branches (Islam et al. ISMAR 2021)
 }

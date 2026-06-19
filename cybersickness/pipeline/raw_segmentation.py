@@ -33,7 +33,7 @@ def segment_sequences_by_minute(raw_df, feature_cols, target_df,
     Returns:
         X      : np.ndarray (n_segments, T, n_features) float32
         y      : np.ndarray (n_segments,) object
-        groups : np.ndarray (n_segments,) str — identifiants sujets
+        groups : np.ndarray (n_segments,) str - identifiants sujets
     """
     target_df = target_df.copy()
     target_df[subject_col] = target_df[subject_col].astype(str).str.strip()
