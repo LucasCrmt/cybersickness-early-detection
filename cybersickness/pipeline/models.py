@@ -116,9 +116,9 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "cnn_lstm":
         return {
-            "cnn_filters": [2, 3],
-            "cnn_kernel": [3, 5],
-            "lstm_units": [32, 64],
+            "cnn_filters": [3, 4],
+            "cnn_kernel": [7, 9],
+            "lstm_units": [64, 128],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.01],
             "batch_size": [16, 32],
