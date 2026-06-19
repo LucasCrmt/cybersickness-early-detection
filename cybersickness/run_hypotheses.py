@@ -44,6 +44,23 @@ def _slugify(text):
 
 
 def _resolve_path(path_value, repo_root):
+    """Résout un chemin ou une liste de chemins.
+
+    Si path_value est une liste, résout chaque chemin et retourne une liste.
+    Si path_value est une chaîne, résout et retourne une chaîne (ou Path).
+    """
+    # Gérer les listes de chemins (multi-source)
+    if isinstance(path_value, (list, tuple)):
+        resolved = []
+        for pv in path_value:
+            path = Path(pv)
+            if path.is_absolute():
+                resolved.append(str(path))
+            else:
+                resolved.append(str((repo_root / path).resolve()))
+        return resolved
+
+    # Cas standard: chaîne unique
     path = Path(path_value)
     if path.is_absolute():
         return path
@@ -146,12 +163,15 @@ def _prepare_profiles(repo_root, base_profiles, hypothesis_profiles):
     output_profile = profiles["output_profile"]
 
     if data_profile.get("source") == "csv" and "file_path" in data_profile:
-        data_profile["file_path"] = str(_resolve_path(data_profile["file_path"], repo_root))
+        resolved = _resolve_path(data_profile["file_path"], repo_root)
+        data_profile["file_path"] = resolved if isinstance(resolved, list) else str(resolved)
 
     if target_profile.get("source") == "csv" and "csv_path" in target_profile:
-        target_profile["csv_path"] = str(_resolve_path(target_profile["csv_path"], repo_root))
+        resolved = _resolve_path(target_profile["csv_path"], repo_root)
+        target_profile["csv_path"] = resolved if isinstance(resolved, list) else str(resolved)
     if target_profile.get("source") == "xlsx" and "xlsx_path" in target_profile:
-        target_profile["xlsx_path"] = str(_resolve_path(target_profile["xlsx_path"], repo_root))
+        resolved = _resolve_path(target_profile["xlsx_path"], repo_root)
+        target_profile["xlsx_path"] = resolved if isinstance(resolved, list) else str(resolved)
 
     if "output_dir" in output_profile:
         output_profile["output_dir"] = str(_resolve_path(output_profile["output_dir"], repo_root))

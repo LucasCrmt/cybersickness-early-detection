@@ -466,6 +466,13 @@ def visual_model_architecture_page(context, save_figure):
 
     rows = _summarize_architecture_rows(model_type, task_type, best_params, model_profile=model_profile)
 
+    fig = plt.figure(figsize=(11.7, 8.3))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.0])
+    ax_schema = fig.add_subplot(gs[0])
+    ax_table = fig.add_subplot(gs[1])
+
+    fig.suptitle("Architecture du modele", fontsize=15, fontweight="bold", y=0.98)
+    _draw_architecture_schema(ax_schema, blocks)
     if model_type == "multistream":
         branch_type = str(
             best_params.get("branch_type") or model_profile.get("branch_type", "cnn_lstm")
@@ -502,7 +509,7 @@ def visual_model_architecture_page(context, save_figure):
         colLabels=["Element", "Valeur"],
         cellLoc="left",
         colLoc="left",
-        bbox=[0.08, 0.02, 0.84, 0.90],
+        bbox=[0.10, 0.05, 0.80, 0.90],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(10)
@@ -621,7 +628,7 @@ def visual_cover_page(context, save_figure):
         colLabels=["Caracteristique", "Valeur"],
         cellLoc="left",
         colLoc="left",
-        bbox=[0.01, table_bottom, 0.98, table_height],
+        bbox=[0.05, table_bottom, 0.90, table_height],
     )
     table.auto_set_font_size(False)
     table.set_fontsize(9.5)
@@ -637,9 +644,43 @@ def visual_cover_page(context, save_figure):
     save_figure(fig, "page_de_garde")
 
 
+def _resolve_hypothesis_text(hypothesis_value):
+    """Résout le texte d'une hypothèse.
+
+    Si hypothesis_value est un chemin de fichier existant, lire le contenu.
+    Sinon, retourner la valeur directement comme texte.
+
+    Parametres :
+    hypothesis_value : str ou None
+
+    Retour :
+    str ou None : texte de l'hypothèse
+    """
+    if hypothesis_value is None:
+        return None
+
+    hypothesis_str = str(hypothesis_value).strip()
+    if not hypothesis_str:
+        return None
+
+    # Vérifier si c'est un chemin de fichier existant
+    if os.path.exists(hypothesis_str):
+        try:
+            with open(hypothesis_str, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception as e:
+            # Si lecture échoue, traiter comme texte direct
+            print(f"Avertissement: impossible de lire {hypothesis_str}: {e}. Utilisation comme texte direct.")
+            return hypothesis_str
+
+    # Sinon, retourner comme texte direct
+    return hypothesis_str
+
+
 def visual_hypothesis_page(context, save_figure):
     output_profile = context["output_profile"]
-    hypothesis = output_profile.get("hypothesis")
+    hypothesis_raw = output_profile.get("hypothesis")
+    hypothesis = _resolve_hypothesis_text(hypothesis_raw)
     if not hypothesis:
         return
 
@@ -698,7 +739,7 @@ def visual_split_report(context, save_figure):
     splits = {"Train": train_idx, "Val": val_idx, "Test": test_idx}
     is_classif = task_type == "classification"
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    fig, axes = plt.subplots(1, 2, figsize=(11.7, 5))
 
     subject_counts = {
         name: dataset_df.iloc[idx]["subject_id"].nunique() if "subject_id" in dataset_df.columns else len(idx)
@@ -732,7 +773,7 @@ def visual_split_report(context, save_figure):
         axes[1].legend()
         axes[1].set_title("Distribution de la cible par split")
 
-    fig.suptitle("Repartition du split", fontsize=13, fontweight="bold")
+    fig.suptitle("Repartition du split", fontsize=13, fontweight="bold", y=0.98)
     fig.tight_layout()
     save_figure(fig, "split_report")
 
@@ -793,7 +834,7 @@ def visual_violin_pages(context, save_figure):
             continue
         n_cols_grid = 2
         n_rows = math.ceil(len(chunk) / n_cols_grid)
-        fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(14, 4 * n_rows))
+        fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(11.7, 4 * n_rows))
         axes = np.atleast_1d(axes).flatten()
 
         for j, col in enumerate(chunk):
@@ -828,7 +869,7 @@ def visual_violin_pages(context, save_figure):
         for j in range(len(chunk), len(axes)):
             axes[j].set_visible(False)
 
-        fig.suptitle(f"Distribution des features par classe (page {i + 1}/{n_v_pages})", fontsize=12, fontweight="bold")
+        fig.suptitle(f"Distribution des features par classe (page {i + 1}/{n_v_pages})", fontsize=12, fontweight="bold", y=0.995)
         fig.tight_layout()
         save_figure(fig, f"violin_page_{i + 1}")
 
@@ -849,9 +890,9 @@ def visual_missing_values_bar(context, save_figure):
         return
 
     top_nan = nan_pct.head(40)
-    fig, ax = plt.subplots(figsize=(max(10, len(top_nan) * 0.25), 4.5))
+    fig, ax = plt.subplots(figsize=(min(11.7, max(10, len(top_nan) * 0.25)), 4.5))
     sns.barplot(x=top_nan.index, y=top_nan.values, ax=ax)
-    ax.set_title("Top features avec valeurs manquantes (%)")
+    ax.set_title("Top features avec valeurs manquantes (%)", pad=12)
     ax.set_xlabel("Feature")
     ax.set_ylabel("% NaN")
     ax.tick_params(axis="x", rotation=45)
@@ -880,7 +921,7 @@ def visual_clipping_boxplots(context, save_figure):
 
     n_cols_grid = 3
     n_rows = math.ceil(len(clip_cols) / n_cols_grid)
-    fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(15, 5 * n_rows))
+    fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(11.7, 5 * n_rows))
     axes = np.atleast_1d(axes).flatten()
     for i, col in enumerate(clip_cols):
         sns.boxplot(data=[raw_df[col], clipped_df[col]], ax=axes[i])
@@ -888,7 +929,7 @@ def visual_clipping_boxplots(context, save_figure):
         axes[i].set_xticklabels(["Avant", "Apres"])
     for i in range(len(clip_cols), len(axes)):
         axes[i].set_visible(False)
-    fig.suptitle("Impact du clipping (echantillon de features)", fontsize=12, fontweight="bold")
+    fig.suptitle("Impact du clipping (echantillon de features)", fontsize=12, fontweight="bold", y=0.995)
     fig.tight_layout()
     save_figure(fig, "clipping_boxplots")
 
@@ -1399,7 +1440,7 @@ def visual_subject_window_performance_page(context, save_figure):
     # Page 1: taille des fenetres sur un participant representatif.
     fig = plt.figure(figsize=(11.7, 8.3))
     ax_timeline = fig.add_subplot(111)
-    fig.suptitle("Taille des fenetres (echantillon participant)", fontsize=14, fontweight="bold")
+    fig.suptitle("Taille des fenetres (echantillon participant)", fontsize=14, fontweight="bold", y=0.98)
 
     display_rows = sample_df.head(min(len(sample_df), 18)).copy()
     if len(display_rows) > 0 and has_window_bounds:
@@ -1506,7 +1547,7 @@ def visual_subject_window_performance_page(context, save_figure):
             colLabels=["participant", "n", "accuracy", "f1_weighted"],
             cellLoc="left",
             colLoc="left",
-            bbox=[0.06, 0.06, 0.88, 0.86],
+            bbox=[0.08, 0.08, 0.84, 0.84],
         )
         table.auto_set_font_size(False)
         table.set_fontsize(9)
@@ -1664,7 +1705,7 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
 
         n_cols_grid = 2
         n_rows = math.ceil(len(chunk) / n_cols_grid)
-        fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(14, 4.2 * n_rows))
+        fig, axes = plt.subplots(n_rows, n_cols_grid, figsize=(11.7, 4.2 * n_rows))
         axes = np.atleast_1d(axes).flatten()
 
         for j, feat in enumerate(chunk):
@@ -1715,6 +1756,7 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
             f"FFT par feature filtree  sujet {top_subject} (page {i + 1}/{n_pages})",
             fontsize=12,
             fontweight="bold",
+            y=0.995,
         )
         fig.tight_layout()
         save_figure(fig, f"temporal_fft_by_feature_page_{i + 1}")
@@ -1778,7 +1820,7 @@ def visual_temporal_preprocess_pages(context, save_figure):
         if not chunk:
             continue
 
-        fig, axes = plt.subplots(len(chunk), 2, figsize=(15, 4.3 * len(chunk)))
+        fig, axes = plt.subplots(len(chunk), 2, figsize=(11.7, 4.3 * len(chunk)))
         if len(chunk) == 1:
             axes = np.array([axes])
 
@@ -1843,6 +1885,7 @@ def visual_temporal_preprocess_pages(context, save_figure):
             f"Avant/Apres par feature filtree  sujet {top_subject} (page {page_idx + 1}/{n_pages})",
             fontsize=12,
             fontweight="bold",
+            y=0.995,
         )
         fig.tight_layout()
         save_figure(fig, f"temporal_preprocess_filtered_features_page_{page_idx + 1}")
