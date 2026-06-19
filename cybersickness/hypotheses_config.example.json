@@ -1,140 +1,148 @@
 {
+  "// usage": "python cybersickness/run_hypotheses.py --config hypotheses_config.example.json [--only nom_hypothese]",
+
+  "// routing": [
+    "3 pipelines disponibles, detectes automatiquement par run_hypotheses.py :",
+    "  1. fusion_profile present                    → stacking multistream (un modele par flux, meta-modele final)",
+    "  2. raw_profile present, pas de fusion_profile → segmentation brute 3D (series temporelles)",
+    "  3. ni l'un ni l'autre                         → pipeline standard 2D (fenetres agregees)"
+  ],
+
+  "// seed": "Graine globale pour la reproductibilite. Surcharge possible par hypothese avec { 'seed': 123 }.",
   "seed": 42,
+
+  "// continue_on_error": "true = le batch continue si une hypothese echoue. false = arret au premier echec.",
   "continue_on_error": false,
-  "run_output_dir": "data/week8/runs",
+
+  "// base_profiles": [
+    "Profils partagés par toutes les hypotheses. Chaque hypothese peut surcharger n'importe quelle cle",
+    "par deep-merge : seules les cles redefinies dans 'profiles' sont ecrasees, les autres sont heritees."
+  ],
   "base_profiles": {
+
+    "// data_profile": "Source des donnees brutes (signaux HMD + eye tracking).",
     "data_profile": {
       "source": "csv",
-      "file_path":
-        "data/Donn\u00e9es brutes/DataPhase1_time.csv",
+      "file_path": "data/Données brutes/DataPhase1_time.csv",
+      "file_path_phase2": "data/Données brutes/DataPhase2_time.csv",
       "subject_id_col": "Participant",
-      "time_col": "Time"
+      "time_col": "Time",
+      "// data_source": "'phase1' | 'phase2' | 'both'. 'both' charge les deux fichiers et ajoute _P1/_P2 aux subject_id.",
+      "data_source": "both"
     },
+
+    "// preprocess_profile": "Reechantillonnage, filtres, fenêtrage, normalisation, selection de features.",
     "preprocess_profile": {
       "approach": "B",
+
+      "// resampling": "Reechantillonnage a pas de temps uniforme. uniform_time_step_s=0.1 → 10 Hz.",
       "use_frequency_resampling": true,
       "frequency_resampling_method": "uniform_time_step",
       "uniform_time_step_s": 0.1,
+
+      "// windowing": "Fenetrage pour le pipeline standard 2D uniquement (ignore par raw/stacking). window_stage='post_preprocess'.",
       "window_stage": "post_preprocess",
       "window_duration_s": 30.0,
       "window_overlap_s": 10.0,
+
+      "// filters": "Filtres temporels. Mettre true + parametres associes pour activer (ex: bandpass_ranges_hz).",
       "apply_temporal_lowpass": false,
-      "lowpass_cutoff_hz": 0.2,
-      "lowpass_order": 4,
-      "lowpass_min_points": 16,
-      "lowpass_features": "all",
       "apply_temporal_highpass": false,
-      "highpass_cutoff_hz": 0.08,
-      "highpass_order": 4,
-      "highpass_min_points": 16,
-      "highpass_features": [
-        "HMDPosX",
-        "HMDPosY",
-        "HMDPosZ",
-        "RotX",
-        "RotY",
-        "RotZ",
-        "X gaze direction",
-        "Y gaze direction"
-      ],
       "apply_temporal_bandpass": false,
-      "bandpass_ranges_hz": [
-        [0.08, 0.12],
-        [0.38, 0.42]
-      ],
-      "bandpass_order": 4,
-      "bandpass_min_points": 16,
-      "bandpass_features": [
-        "HMDPosX",
-        "HMDPosY",
-        "HMDPosZ",
-        "RotX",
-        "RotY",
-        "RotZ",
-        "X gaze direction",
-        "Y gaze direction",
-        "Pupil diameter AVG"
-      ],
+
+      "// imputation": "Strategie d'imputation des valeurs manquantes : 'median' | 'mean' | 'zero'.",
       "imputation_strategy": "median",
       "drop_low_information_features": false,
       "min_valid_features": 1,
+
+      "// normalization": "'standard' (z-score) | 'minmax' | null.",
       "normalization": "standard",
+
       "time_col": "time",
       "time_unit": "s",
       "subject_id_col": "subject_id",
+
+      "// exclude_features": "Colonnes toujours exclues du vecteur de features (meta-colonnes, doublons).",
       "exclude_features": [
-        "minute",
-        "time",
-        "sampling_hz",
-        "row_id",
-        "Left Pupil Diameter",
-        "Right Pupil Diameter",
-        "window_start",
-        "window_end",
-        "window_center",
-        "window_id",
-        "window_duration_s",
-        "window_overlap_s",
-        "source_index"
+        "minute", "time", "sampling_hz", "row_id",
+        "Left Pupil Diameter", "Right Pupil Diameter",
+        "window_start", "window_end", "window_center",
+        "window_id", "window_duration_s", "window_overlap_s", "source_index"
       ],
+
+      "// column_aggregations": "Cree de nouvelles colonnes avant exclusion. Ici, moyenne des deux pupilles.",
       "column_aggregations": {
         "Pupil diameter AVG": {
-          "columns": [
-            "Left Pupil Diameter",
-            "Right Pupil Diameter"
-          ],
+          "columns": ["Left Pupil Diameter", "Right Pupil Diameter"],
           "strategy": "mean"
         }
       },
+
+      "// include_features": [
+        "Liste ordonnee des features a conserver.",
+        "IMPORTANT pour multistream : les features eye doivent etre en PREMIER (les n_eye_features premieres colonnes forment le flux eye)."
+      ],
       "include_features": [
-        "HMDPosX",
-        "HMDPosY",
-        "HMDPosZ",
-        "RotX",
-        "RotY",
-        "RotZ",
+        "HMDPosX", "HMDPosY", "HMDPosZ",
+        "RotX", "RotY", "RotZ",
         "Pupil diameter AVG",
-        "X gaze direction",
-        "Y gaze direction",
-        "isBoat",
-        "X World Position",
-        "Y World Position"
+        "X gaze direction", "Y gaze direction",
+        "isBoat", "X World Position", "Y World Position"
       ]
     },
+
+    "// target_profile": "Source et mise en forme de la variable cible (scores FMS).",
     "target_profile": {
       "source": "xlsx",
-      "xlsx_path":
-        "data/Questionnaires/FMS1_org.xlsx",
+      "// data_source": "Meme logique que data_profile : 'both' charge FMS1 + FMS2 et ajoute _P1/_P2.",
+      "data_source": "both",
+      "xlsx_path": "data/Questionnaires/FMS1_org.xlsx",
+      "xlsx_path_phase2": "data/Questionnaires/FMS2_org.xlsx",
       "sheet_name": "Feuil1",
       "subject_id_col": "Sujet",
-      "target_mode": "fixed_minute",
-      "target_minute": 14,
+
+      "// target_mode": "'per_minute' = une cible par minute (pour le pipeline 3D et standard). 'fixed_minute' = une seule minute (ex: la 14e).",
+      "target_mode": "per_minute",
       "minute_columns": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
       "minute_col": "minute",
       "clip_quantiles": null,
+
+      "// discretize": "Discretisation du score FMS continu. method='quantile' (tertiles) ou method='bins' (seuils fixes).",
       "discretize": {
         "method": "quantile",
         "quantiles": [0.0, 0.3333333333, 0.6666666667, 1.0],
         "labels": ["low", "medium", "high"]
       }
     },
+
+    "// model_profile": "Type de modele, strategie de split, hyperparametres.",
     "model_profile": {
+      "// model_type": "Modeles disponibles : 'bilstm' | 'cnn_lstm' | 'cnn_1d' | 'inception_time' | 'random_forest' | 'xgboost' | 'svm' | 'multistream'.",
       "model_type": "bilstm",
       "task_type": "classification",
       "use_hyperparam_search": false,
+
+      "// split_method": "'balanced_subject_windows' | 'stratified_subject_windows' | 'group' (inter-individuel strict) | 'random'.",
       "split_method": "balanced_subject_windows",
       "min_windows_per_subject_test": 5,
+
+      "// group_split_by_root_subject": "true si data_source='both' : groupe les sujets par ID racine (sans _P1/_P2) pour eviter la fuite P1→test/P2→train.",
+      "group_split_by_root_subject": true,
       "test_size": 0.2,
       "val_size": 0.1,
       "class_weight": "balanced",
       "random_state": 42
     },
+
+    "// output_profile": "Dossier de sortie et contenu du rapport PDF.",
     "output_profile": {
-      "output_dir": "data/outputs/week8/cnn_lstm",
+      "output_dir": "data/outputs/runs",
       "save_visual_report": true,
+      "// visual_report_format": "'pdf' | 'png' | 'both'.",
       "visual_report_format": "pdf",
-      "visual_report_name": "night_batch",
-      "hypothesis": "Prediction du niveau de cybersickness (low/medium/high) a partir des signaux temporels tete/yeux + diametre pupillaire, reechantillonnes a 10 Hz, fenetres 30s overlap 10s, filtrage passe-bande autour de 0.1 Hz et 0.4 Hz, split inter-individuel.",
+      "visual_report_name": "batch",
+      "hypothesis": "Description de l'hypothese testee.",
+      "// visual_report_functions": "Pages a inclure dans le rapport. Supprimer une entree pour l'exclure.",
       "visual_report_functions": [
         "visual_hypothesis_page",
         "visual_cover_page",
@@ -143,87 +151,175 @@
         "visual_metrics_table_page",
         "visual_subject_window_performance_page",
         "visual_confusion_matrix_page",
-        "visual_temporal_preprocess_pages",     
+        "visual_temporal_preprocess_pages",
         "visual_missing_values_bar",
         "visual_correlation_pages",
         "visual_violin_pages"
       ]
     }
   },
+
   "hypotheses": [
+
     {
-      "name": "h1_bilstm_tertile_no_filter_per_minute",
+      "// pipeline": "PIPELINE STANDARD 2D — pas de raw_profile ni fusion_profile",
+      "// description": "Features agregees par fenetre (vecteur plat). Adapte aux modeles classiques et deep learning via reshape automatique.",
+      "name": "h1_standard_bilstm_tertile_30s",
       "profiles": {
-        "target_profile": {
-          "target_mode": "per_minute"
-        },
         "preprocess_profile": {
-          "uniform_time_step_s": 0.1,
           "window_duration_s": 30.0,
           "window_overlap_s": 0.0
         },
-        "output_profile": {
-          "visual_report_name": "h1_bilstm_tertile_no_filter_per_minute",
-          "hypothesis": "data/outputs/week8/bilstm/hypothesis/h1.txt"}
-      }
-    },
-    {
-      "name": "h2_bilstm_0_5_10_20_no_filter_per_minute",
-      "profiles": {
         "target_profile": {
-          "target_mode": "per_minute",
           "discretize": {
-            "method": "bins",
-            "bins": [0, 5, 10 , 20],
+            "method": "quantile",
+            "quantiles": [0.0, 0.3333333333, 0.6666666667, 1.0],
             "labels": ["low", "medium", "high"]
           }
         },
-        "preprocess_profile": {
-          "uniform_time_step_s": 0.1,
-          "window_duration_s": 30.0,
-          "window_overlap_s": 0
-        },
         "output_profile": {
-          "visual_report_name": "h2_bilstm_0_5_10_20_no_filter_per_minute",
-          "hypothesis": "data/outputs/week8/bilstm/hypothesis/h2.txt"}
+          "visual_report_name": "h1_standard_bilstm_tertile_30s",
+          "hypothesis": "BiLSTM, tertiles FMS, fenetres 30s sans overlap, phases 1+2."
+        }
       }
     },
+
     {
-      "name": "h3_bilstm_tertile_no_filter_60s_per_minute",
+      "// pipeline": "PIPELINE STANDARD 2D — variante avec seuils fixes et fenetres 60s",
+      "name": "h2_standard_bilstm_bins_60s",
       "profiles": {
-        "target_profile": {
-          "target_mode": "per_minute"
-        },
         "preprocess_profile": {
-          "uniform_time_step_s": 0.1,
           "window_duration_s": 60.0,
           "window_overlap_s": 0.0
         },
-        "output_profile": {
-          "visual_report_name": "h3_bilstm_tertile_no_filter_60s_per_minute",
-          "hypothesis": "data/outputs/week8/bilstm/hypothesis/h3.txt"}
-      }
-    },
-    {
-      "name": "h4_bilstm_0_5_10_20_no_filter_60s_per_minute",
-      "profiles": {
         "target_profile": {
-          "target_mode": "per_minute",
           "discretize": {
+            "// method": "bins = seuils fixes. Ici : low=[0,5[, medium=[5,10[, high=[10,20].",
             "method": "bins",
-            "bins": [0, 5, 10 , 20],
+            "bins": [0, 5, 10, 20],
             "labels": ["low", "medium", "high"]
           }
         },
-        "preprocess_profile": {
-          "uniform_time_step_s": 0.1,
-          "window_duration_s": 60.0,
-          "window_overlap_s": 0
+        "output_profile": {
+          "visual_report_name": "h2_standard_bilstm_bins_60s",
+          "hypothesis": "BiLSTM, seuils fixes FMS [0-5-10-20], fenetres 60s sans overlap, phases 1+2."
+        }
+      }
+    },
+
+    {
+      "// pipeline": "SEGMENTATION BRUTE 3D — raw_profile present, pas de fusion_profile",
+      "// description": "Series temporelles brutes decoupees en fenetres glissantes → tenseur 3D (n_fenetres, T, n_features). Chaque fenetre est labellisee par la minute FMS correspondante.",
+      "name": "h3_raw_bilstm_tertile_20s",
+      "profiles": {
+        "raw_profile": {
+          "// window_s": "Duree de la fenetre glissante en secondes.",
+          "window_s": 20.0,
+          "// stride_s": "Pas entre deux fenetres. stride < window_s → chevauchement.",
+          "stride_s": 10.0,
+          "// sequence_length": "Nombre de pas de temps dans chaque fenetre (= window_s / uniform_time_step_s).",
+          "sequence_length": 200,
+          "// per_subject_norm": "true = normalisation z-score par sujet AVANT segmentation (en plus de la normalisation globale).",
+          "per_subject_norm": false,
+          "// session_min_s / session_max_s": "Restreindre les fenetres a une plage de la session (null = pas de restriction).",
+          "session_min_s": null,
+          "session_max_s": null
+        },
+        "target_profile": {
+          "discretize": {
+            "method": "quantile",
+            "quantiles": [0.0, 0.3333333333, 0.6666666667, 1.0],
+            "labels": ["low", "medium", "high"]
+          }
         },
         "output_profile": {
-          "visual_report_name": "h4_bilstm_0_5_10_20_no_filter_60s_per_minute",
-          "hypothesis": "data/outputs/week8/bilstm/hypothesis/h4.txt"}
+          "visual_report_name": "h3_raw_bilstm_tertile_20s",
+          "hypothesis": "BiLSTM sur series brutes 3D, tertiles FMS, fenetres 20s stride 10s, phases 1+2."
+        }
+      }
+    },
+
+    {
+      "// pipeline": "MULTISTREAM END-TO-END — raw_profile + model_type='multistream'",
+      "// description": [
+        "Modele Keras a deux branches paralleles traitant simultanement deux flux de features.",
+        "Flux eye  : les N premieres colonnes de include_features (definies par n_eye_features).",
+        "Flux head : toutes les colonnes suivantes.",
+        "ATTENTION : l'ordre de include_features est critique — les features eye DOIVENT etre en premier.",
+        "Parametres repris de hypotheses_fusion_v6_config.json (h51_full_baseline)."
+      ],
+      "name": "h4_multistream_cnn1d_tertile_30s",
+      "profiles": {
+        "raw_profile": {
+          "window_s": 30.0,
+          "stride_s": 15.0,
+          "sequence_length": 300,
+          "per_subject_norm": true
+        },
+        "preprocess_profile": {
+          "// include_features": "Reordonne par rapport au base : eye (gaze+pupil+world) en premier, head (HMD+rot) en second.",
+          "include_features": [
+            "X gaze direction", "Y gaze direction", "Pupil diameter AVG",
+            "isBoat", "X World Position", "Y World Position",
+            "HMDPosX", "HMDPosY", "HMDPosZ",
+            "RotX", "RotY", "RotZ"
+          ]
+        },
+        "model_profile": {
+          "model_type": "multistream",
+          "// branch_type": "Architecture de chaque branche : 'cnn_1d' | 'cnn_lstm' | 'bilstm' | 'inception'.",
+          "branch_type": "cnn_1d",
+          "// n_eye_features": "Nombre de features affectees a la branche eye (les N premieres de include_features). Ici : gaze(2) + pupil(1) + world(3) = 6.",
+          "n_eye_features": 6,
+          "split_method": "random",
+          "group_split_by_root_subject": true
+        },
+        "output_profile": {
+          "visual_report_name": "h4_multistream_cnn1d_tertile_30s",
+          "hypothesis": "CNN 1D multistream end-to-end (flux eye : gaze+pupil+world / flux head : HMD+rot), tertiles FMS, fenetres 30s stride 15s, phases 1+2."
+        }
+      }
+    },
+
+    {
+      "// pipeline": "STACKING MULTISTREAM — fusion_profile + raw_profile",
+      "// description": [
+        "Late fusion : un modele independant est entraine par flux, ses predictions (probabilites) sont concatenees",
+        "en un vecteur de meta-features, puis un meta-modele final est entraine sur ces meta-features.",
+        "Contraste avec multistream end-to-end (h4) : ici les flux sont entierement separes pendant l'entrainement.",
+        "2 flux (comme n_eye_features=3 de hypotheses_fusion_config.json) :",
+        "  eye  : gaze direction + Pupil diameter",
+        "  head : HMD position + rotation + world context"
+      ],
+      "name": "h5_stacking_cnn1d_logreg_tertile_30s",
+      "profiles": {
+        "raw_profile": {
+          "window_s": 30.0,
+          "stride_s": 15.0,
+          "sequence_length": 300,
+          "per_subject_norm": true
+        },
+        "fusion_profile": {
+          "// streams": "Dictionnaire flux → liste de colonnes. Les noms doivent correspondre exactement aux features apres preprocess.",
+          "streams": {
+            "eye":  ["X gaze direction", "Y gaze direction", "Pupil diameter AVG"],
+            "head": ["HMDPosX", "HMDPosY", "HMDPosZ", "RotX", "RotY", "RotZ", "isBoat", "X World Position", "Y World Position"]
+          },
+          "// meta_model": "Modele final entraine sur les predictions des flux : 'logistic_regression' | 'random_forest' | 'bilstm' | 'cnn_1d' | etc.",
+          "meta_model": "logistic_regression"
+        },
+        "model_profile": {
+          "// model_type": "Type de modele utilise pour chaque flux (meme architecture pour tous les flux ici).",
+          "model_type": "cnn_1d",
+          "split_method": "random",
+          "group_split_by_root_subject": true
+        },
+        "output_profile": {
+          "visual_report_name": "h5_stacking_cnn1d_logreg_tertile_30s",
+          "hypothesis": "Stacking : CNN 1D par flux (eye : gaze+pupil / head : HMD+rot+world), meta-modele logistic regression, tertiles FMS, fenetres 30s stride 15s, phases 1+2."
+        }
       }
     }
+
   ]
 }
