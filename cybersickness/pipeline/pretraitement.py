@@ -5,7 +5,7 @@ from pipeline.extract import apply_sliding_window_sequences
 
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupShuffleSplit, train_test_split
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler, StandardScaler, RobustScaler
 
 
 def _resolve_filter_features(feature_cols, preprocess_profile, profile_key):
@@ -603,6 +603,190 @@ def apply_preprocess(df, preprocess_profile):
     return out, feature_cols
 
 
+def apply_per_subject_standardization(df, feature_cols, subject_col="subject_id"):
+    """Normalise chaque sujet indépendamment (per-subject standardization).
+
+    Très utile pour l'approche B temporelle pour éliminer les confounds
+    inter-individuels (ex: baseline HR différente par sujet).
+
+    Parametres :
+    df           : DataFrame avec les données
+    feature_cols : liste des colonnes numeriques à normaliser
+    subject_col  : nom de la colonne subject_id
+
+    Retour :
+    DataFrame avec features normalisées par sujet
+    """
+    df_norm = df.copy()
+
+    for subject in df[subject_col].unique():
+        mask = df[subject_col] == subject
+        for col in feature_cols:
+            if col not in df.columns:
+                continue
+
+            x = pd.to_numeric(df.loc[mask, col], errors="coerce")
+            valid = x.notna()
+
+            if valid.sum() < 2:
+                # Pas assez de points pour normaliser
+                df_norm.loc[mask, col] = df.loc[mask, col]
+                continue
+
+            x_valid = x[valid]
+            mean_x = float(x_valid.mean())
+            std_x = float(x_valid.std())
+
+            if std_x > 1e-10:
+                df_norm.loc[mask & valid.values, col] = (x_valid - mean_x) / std_x
+            else:
+                # Variance nulle → mettre à 0
+                df_norm.loc[mask & valid.values, col] = 0.0
+
+    return df_norm
+
+
+def _split_stratified_subject_windows(idx, y, groups, test_size, val_size, min_windows_per_subject_test, random_state):
+    """Split avec garantie d'un minimum de fenêtres par sujet dans le test.
+
+    Assure que chaque participant unique a au moins min_windows_per_subject_test
+    fenêtres dans le pool de test, puis complète aléatoirement jusqu'à test_size.
+
+    Parametres :
+    idx                          : indices complets (np.arange(len(y)))
+    y                            : vecteur cible
+    groups                       : vecteur de groupes (subject_id)
+    test_size                    : fraction cible pour le test (après garantie minimum)
+    val_size                     : fraction cible pour la validation (du train/val)
+    min_windows_per_subject_test : nombre minimum de fenêtres par sujet dans test
+    random_state                 : seed pour reproductibilité
+
+    Retour :
+    (train_idx, val_idx, test_idx)
+    """
+    rng = np.random.RandomState(random_state)
+
+    # Identifier les participants uniques et leurs fenêtres
+    unique_subjects = np.unique(groups)
+    test_indices = []
+
+    # Étape 1: Garantir min_windows_per_subject_test fenêtres par sujet dans test
+    for subject in unique_subjects:
+        subject_mask = groups == subject
+        subject_indices = idx[subject_mask]
+
+        n_windows = len(subject_indices)
+        n_test = min(min_windows_per_subject_test, n_windows)
+
+        # Sélectionner aléatoirement n_test fenêtres pour ce sujet
+        selected = rng.choice(subject_indices, size=n_test, replace=False)
+        test_indices.extend(selected)
+
+    test_idx_mandatory = np.array(test_indices, dtype=int)
+
+    # Étape 2: Compléter aléatoirement jusqu'à test_size
+    test_size_target = int(np.ceil(len(idx) * test_size))
+    remaining_needed = test_size_target - len(test_idx_mandatory)
+
+    # Candidates = indices non yet selected pour le test
+    candidates = np.setdiff1d(idx, test_idx_mandatory)
+
+    if remaining_needed > 0 and len(candidates) > 0:
+        additional = rng.choice(
+            candidates,
+            size=min(remaining_needed, len(candidates)),
+            replace=False
+        )
+        test_idx = np.concatenate([test_idx_mandatory, additional])
+    else:
+        test_idx = test_idx_mandatory
+
+    # Étape 3: Train/Val split sur les indices restants
+    train_val_idx = np.setdiff1d(idx, test_idx)
+
+    # Stratify sur la cible si classification
+    stratify_tv = y[train_val_idx] if len(np.unique(y[train_val_idx])) > 1 else None
+
+    val_rel = val_size / (1.0 - test_size) if test_size < 1.0 else 0.0
+    if val_rel > 0 and len(train_val_idx) >= 2:
+        train_idx, val_idx = train_test_split(
+            train_val_idx,
+            test_size=val_rel,
+            random_state=random_state,
+            stratify=stratify_tv
+        )
+    else:
+        train_idx = train_val_idx
+        val_idx = np.array([], dtype=int)
+
+    return train_idx, val_idx, test_idx
+
+
+def _split_balanced_subject_windows(idx, y, groups, test_size, val_size, random_state):
+    """Split avec distribution équilibrée des fenêtres de test par participant.
+
+    Distribue les fenêtres de test de manière uniforme entre les participants.
+    Les fenêtres sont sélectionnées aléatoirement DANS CHAQUE participant.
+
+    Parametres :
+    idx          : indices complets (np.arange(len(y)))
+    y            : vecteur cible
+    groups       : vecteur de groupes (subject_id)
+    test_size    : fraction cible pour le test (0.2 = 20%)
+    val_size     : fraction cible pour la validation (du train/val)
+    random_state : seed pour reproductibilité
+
+    Retour :
+    (train_idx, val_idx, test_idx)
+    """
+    rng = np.random.RandomState(random_state)
+
+    # Identifer les participants uniques et leurs fenêtres
+    unique_subjects = np.unique(groups)
+    n_subjects = len(unique_subjects)
+
+    # Calculer le nombre cible de fenêtres pour le test
+    test_size_target = int(np.ceil(len(idx) * test_size))
+
+    # Distribuer équitablement: test_size_target / n_subjects fenêtres par sujet
+    windows_per_subject_test = max(1, test_size_target // n_subjects)
+
+    test_indices = []
+
+    # Pour chaque participant, sélectionner aléatoirement windows_per_subject_test fenêtres
+    for subject in unique_subjects:
+        subject_mask = groups == subject
+        subject_indices = idx[subject_mask]
+
+        n_windows = len(subject_indices)
+        n_test = min(windows_per_subject_test, n_windows)
+
+        # Sélectionner aléatoirement n_test fenêtres pour ce sujet
+        selected = rng.choice(subject_indices, size=n_test, replace=False)
+        test_indices.extend(selected)
+
+    test_idx = np.array(test_indices, dtype=int)
+
+    # Train/Val split sur les indices restants
+    train_val_idx = np.setdiff1d(idx, test_idx)
+
+    # Stratify sur la cible si classification
+    stratify_tv = y[train_val_idx] if len(np.unique(y[train_val_idx])) > 1 else None
+
+    val_rel = val_size / (1.0 - test_size) if test_size < 1.0 else 0.0
+    if val_rel > 0 and len(train_val_idx) >= 2:
+        train_idx, val_idx = train_test_split(
+            train_val_idx,
+            test_size=val_rel,
+            random_state=random_state,
+            stratify=stratify_tv
+        )
+    else:
+        train_idx = train_val_idx
+        val_idx = np.array([], dtype=int)
+
+    return train_idx, val_idx, test_idx
+
 def split_indices(y, groups, model_profile):
     idx = np.arange(len(y))
     split_method = model_profile["split_method"]
@@ -634,8 +818,32 @@ def split_indices(y, groups, model_profile):
         train_idx = train_val_idx[train_sub_idx]
         val_idx = train_val_idx[val_sub_idx]
 
+    elif split_method == "stratified_subject_windows":
+        min_windows = int(model_profile.get("min_windows_per_subject_test", 5))
+        train_idx, val_idx, test_idx = _split_stratified_subject_windows(
+            idx=idx,
+            y=y,
+            groups=groups,
+            test_size=test_size,
+            val_size=val_size,
+            min_windows_per_subject_test=min_windows,
+            random_state=random_state
+        )
+
+    elif split_method == "balanced_subject_windows":
+        train_idx, val_idx, test_idx = _split_balanced_subject_windows(
+            idx=idx,
+            y=y,
+            groups=groups,
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state
+        )
+
     else:
-        raise ValueError("split_method doit etre 'random' ou 'group'.")
+        raise ValueError(
+            "split_method doit etre 'random', 'group', 'stratified_subject_windows' ou 'balanced_subject_windows'."
+        )
 
     return train_idx, val_idx, test_idx
 
@@ -665,6 +873,8 @@ def prepare_splits_and_impute(dataset_df, feature_cols, preprocess_profile, mode
         scaler = StandardScaler()
     elif norm == "minmax":
         scaler = MinMaxScaler()
+    elif norm == "robust":
+        scaler = RobustScaler()
 
     if scaler is not None:
         X_train_imp = scaler.fit_transform(X_train_imp)
