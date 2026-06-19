@@ -5,7 +5,30 @@ from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import f1_score, mean_squared_error
 from sklearn.model_selection import ParameterGrid
 
-from .models import _XGBClassifierWrapper, build_model, get_search_space
+from .models import build_model, get_search_space
+
+_DEEP_MODEL_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
+
+
+def _resolve_stream_profile(model_profile, stream_name):
+    """Retourne le profil du flux si STREAM_PROFILES est fourni, sinon le profil global."""
+    if (
+        isinstance(model_profile, dict)
+        and stream_name in model_profile
+        and isinstance(model_profile.get(stream_name), dict)
+        and "task_type" in model_profile.get(stream_name, {})
+    ):
+        return model_profile[stream_name]
+    return model_profile
+
+
+def _get_base_profile(model_profile):
+    """Extrait un profil de base pour les paramètres communs (task_type, etc.)."""
+    if isinstance(model_profile, dict):
+        for v in model_profile.values():
+            if isinstance(v, dict) and "task_type" in v:
+                return v
+    return model_profile
 
 
 def split_feature_streams(feature_cols, fusion_profile):
@@ -43,15 +66,19 @@ def _col_indices(stream_cols, feature_cols):
 
 
 def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols, model_profile):
-    """Entraîne un modèle XGBoost par flux via grid search sur le val set.
+    """Entraîne un modèle par flux via grid search sur le val set.
+
+    model_profile peut être :
+    - un dict unique : même profil pour tous les flux
+    - un dict de profils {stream_name: profile} : profil différent par flux (STREAM_PROFILES)
 
     Les stream_models sont entraînés sur train uniquement — leurs prédictions
     sur val serviront à entraîner le méta-modèle sans fuite de données.
 
     Retourne {stream_name: fitted_model}.
     """
-    is_classif = model_profile["task_type"] == "classification"
-    search_space = get_search_space(model_profile["task_type"], model_profile)
+    base_profile = _get_base_profile(model_profile)
+    is_classif = base_profile["task_type"] == "classification"
     fitted = {}
 
     for stream_name, stream_cols in stream_map.items():
@@ -59,13 +86,36 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
             print(f"[fusion] Stream '{stream_name}' vide, ignoré.")
             continue
 
-        idx = _col_indices(stream_cols, feature_cols)
-        X_tr = X_train[:, idx]
-        X_vl = X_val[:, idx]
+        stream_profile = _resolve_stream_profile(model_profile, stream_name)
+        search_space = get_search_space(stream_profile["task_type"], stream_profile)
 
-        best_score, best_model = -np.inf, None
-        for params in ParameterGrid(search_space):
-            m = build_model(params, model_profile)
+        idx = _col_indices(stream_cols, feature_cols)
+        is_3d = X_train.ndim == 3
+
+        if is_3d:
+            X_tr = X_train[:, :, idx]   # (n, T, n_stream_features)
+            X_vl = X_val[:, :, idx]
+        else:
+            X_tr = X_train[:, idx]
+            X_vl = X_val[:, idx]
+
+        model_type = stream_profile.get("model_type", "random_forest")
+
+        if model_type in _DEEP_MODEL_TYPES:
+            if is_3d:
+                T, nf = X_tr.shape[1], X_tr.shape[2]
+            else:
+                T, nf = X_tr.shape[1], 1
+                X_tr = X_tr.reshape(-1, T, 1)
+                X_vl = X_vl.reshape(-1, T, 1)
+
+            deep_profile = {
+                **stream_profile,
+                "sequence_length": T,
+                "n_features": nf,
+                "n_classes": int(len(set(y_train))) if is_classif else 1,
+            }
+            m = build_model({"sequence_length": T, "n_features": nf}, deep_profile)
             m.fit(X_tr, y_train)
             pred = m.predict(X_vl)
             score = (
@@ -73,13 +123,31 @@ def train_stream_models(X_train, y_train, X_val, y_val, stream_map, feature_cols
                 if is_classif
                 else -float(np.sqrt(mean_squared_error(y_val, pred)))
             )
-            if score > best_score:
-                best_score, best_model = score, deepcopy(m)
+            fitted[stream_name] = m
+            label = "F1" if is_classif else "RMSE"
+            print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {score:.4f}")
+        else:
+            if is_3d:
+                X_tr = X_tr.reshape(X_tr.shape[0], -1)
+                X_vl = X_vl.reshape(X_vl.shape[0], -1)
 
-        fitted[stream_name] = best_model
-        label = "F1" if is_classif else "RMSE"
-        val = best_score if is_classif else -best_score
-        print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features) — {label} val: {val:.4f}")
+            best_score, best_model = -np.inf, None
+            for params in ParameterGrid(search_space):
+                m = build_model(params, stream_profile)
+                m.fit(X_tr, y_train)
+                pred = m.predict(X_vl)
+                score = (
+                    f1_score(y_val, pred, average="weighted", zero_division=0)
+                    if is_classif
+                    else -float(np.sqrt(mean_squared_error(y_val, pred)))
+                )
+                if score > best_score:
+                    best_score, best_model = score, deepcopy(m)
+
+            fitted[stream_name] = best_model
+            label = "F1" if is_classif else "RMSE"
+            val = best_score if is_classif else -best_score
+            print(f"[fusion] Stream '{stream_name}' ({len(stream_cols)} features, {model_type}) -> {label} val: {val:.4f}")
 
     return fitted
 
@@ -89,11 +157,22 @@ def make_meta_features(stream_models, stream_map, X, feature_cols, is_classifica
 
     Classification : predict_proba (vecteur de probabilités par classe).
     Régression     : predict (scalaire → colonne).
+
+    Supporte X 2D (n, n_features) et 3D (n, T, n_channels).
     """
     parts = []
+    is_3d = X.ndim == 3
     for stream_name, model in stream_models.items():
         idx = _col_indices(stream_map[stream_name], feature_cols)
-        X_s = X[:, idx]
+        is_deep = hasattr(model, "input_shape")
+        if is_3d:
+            X_s = X[:, :, idx]                  # (n, T, n_channels)
+            if not is_deep:
+                X_s = X_s.reshape(len(X_s), -1) # aplatir pour modèles classiques
+        else:
+            X_s = X[:, idx]
+            if is_deep:
+                X_s = X_s.reshape(-1, X_s.shape[1], 1)
         if is_classification and hasattr(model, "predict_proba"):
             parts.append(model.predict_proba(X_s))
         else:
@@ -101,32 +180,73 @@ def make_meta_features(stream_models, stream_map, X, feature_cols, is_classifica
     return np.hstack(parts)
 
 
-def build_meta_model(fusion_profile, task_type, seed=42):
+_CLASSICAL_META_TYPES = {"logistic_regression", "random_forest", "svm", "xgboost"}
+_DEEP_META_TYPES = {"cnn_1d", "inception_time", "bilstm", "cnn_lstm", "td_cnn_lstm"}
+
+
+class _DeepMetaWrapper:
+    """Adapte un KerasSklearnWrapper pour des entrées 2D (méta-features plates).
+
+    Les modèles deep attendent (n, T, features). Le méta-vecteur est 2D (n, k).
+    Ce wrapper reshape automatiquement vers (n, k, 1) avant chaque appel.
+    """
+
+    def __init__(self, model):
+        self._model = model
+
+    def _reshape(self, X):
+        return X.reshape(len(X), X.shape[1], 1)
+
+    def fit(self, X, y):
+        self._model.fit(self._reshape(X), y)
+        return self
+
+    def predict(self, X):
+        return self._model.predict(self._reshape(X))
+
+    def predict_proba(self, X):
+        return self._model.predict_proba(self._reshape(X))
+
+    @property
+    def classes_(self):
+        return getattr(self._model, "classes_", None)
+
+
+def build_meta_model(fusion_profile, task_type, seed=42, n_meta_features=None, n_classes=None):
     """Construit le méta-modèle (dernière couche de fusion).
 
-    Options meta_model : logistic_regression / random_forest / svm / xgboost
+    Options meta_model : logistic_regression / ridge /
+                         random_forest / svm / xgboost (approche A)
+                         cnn_1d / inception_time / bilstm / cnn_lstm / td_cnn_lstm (approche B)
     """
-    from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-    from sklearn.svm import SVC, SVR
-    from xgboost import XGBRegressor
-
     meta_type = fusion_profile.get("meta_model", "logistic_regression")
     is_classif = task_type == "classification"
 
-    if meta_type == "random_forest":
-        if is_classif:
-            return RandomForestClassifier(n_estimators=200, random_state=seed, class_weight="balanced", n_jobs=-1)
-        return RandomForestRegressor(n_estimators=200, random_state=seed, n_jobs=-1)
+    if meta_type in _DEEP_META_TYPES:
+        if n_meta_features is None:
+            raise ValueError("n_meta_features requis pour un méta-modèle deep learning.")
+        meta_profile = {
+            "model_type": meta_type,
+            "task_type": task_type,
+            "n_classes": n_classes or 3,
+            "random_state": seed,
+        }
+        params = {"sequence_length": n_meta_features, "n_features": 1}
+        return _DeepMetaWrapper(build_model(params, meta_profile))
 
-    if meta_type == "svm":
-        if is_classif:
-            return SVC(kernel="rbf", class_weight="balanced")
-        return SVR(kernel="rbf")
-
-    if meta_type == "xgboost":
-        if is_classif:
-            return _XGBClassifierWrapper(n_estimators=100, random_state=seed, eval_metric="logloss")
-        return XGBRegressor(n_estimators=100, random_state=seed)
+    if meta_type in _CLASSICAL_META_TYPES - {"logistic_regression"}:
+        meta_profile = {
+            "model_type": meta_type,
+            "task_type": task_type,
+            "random_state": seed,
+            "class_weight": "balanced" if is_classif else None,
+        }
+        if meta_type == "random_forest":
+            return build_model({"n_estimators": 200}, meta_profile)
+        if meta_type == "svm":
+            return build_model({"kernel": "rbf"}, meta_profile)
+        if meta_type == "xgboost":
+            return build_model({"n_estimators": 100}, meta_profile)
 
     # logistic_regression (defaut classif) / ridge (defaut regression)
     if is_classif:

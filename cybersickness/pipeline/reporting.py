@@ -293,6 +293,169 @@ def _summarize_architecture_rows(model_type, task_type, best_params, model_profi
     return rows
 
 
+def _draw_multistream_architecture(ax, params, model_profile=None):
+    """Schéma vertical à deux branches pour le modèle de fusion multistream.
+
+    Supporte branch_type: cnn_lstm | inception | td_cnn_lstm.
+    Supporte branches asymétriques via eye_cnn_filters / head_cnn_filters.
+    """
+    ax.set_axis_off()
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+
+    # Fusion model_profile + params (params prioritaires)
+    all_p = {**(model_profile or {}), **params}
+
+    branch_type = str(all_p.get("branch_type", "cnn_lstm")).lower()
+    cnn_f       = int(all_p.get("cnn_filters",    32))
+    lstm_u      = int(all_p.get("lstm_units",     64))
+    n_eye       = int(all_p.get("n_eye_features",  3))
+    n_head      = 12 - n_eye
+    eye_cnn_f   = int(all_p.get("eye_cnn_filters",  cnn_f))
+    head_cnn_f  = int(all_p.get("head_cnn_filters", cnn_f))
+    eye_lstm_u  = int(all_p.get("eye_lstm_units",   lstm_u))
+    head_lstm_u = int(all_p.get("head_lstm_units",  lstm_u))
+
+    # Calcul de T : window_size_s * 10 Hz, sinon timesteps, sinon 300
+    window_s = all_p.get("window_size_s")
+    if window_s is not None:
+        T = int(float(window_s) * 10)
+    else:
+        T = int(all_p.get("timesteps", 300))
+
+    C_INPUT  = "#EAF2FF"
+    C_EYE    = "#D4EDDA"
+    C_HEAD   = "#D1ECF1"
+    C_FUSION = "#FFF3CD"
+    C_OUT    = "#FFF1D6"
+    C_ARROW  = "#7E93B2"
+
+    BW  = 0.26
+    BH  = 0.072
+    GAP = 0.022
+
+    CX = 0.50
+    LX = 0.215
+    RX = 0.785
+
+    def _box(xc, yb, title, sub, color):
+        xl = xc - BW / 2
+        ax.add_patch(FancyBboxPatch(
+            (xl + 0.005, yb - 0.005), BW, BH,
+            boxstyle="round,pad=0.01,rounding_size=0.015",
+            linewidth=0, facecolor="#000", alpha=0.05,
+            transform=ax.transAxes, zorder=1))
+        ax.add_patch(FancyBboxPatch(
+            (xl, yb), BW, BH,
+            boxstyle="round,pad=0.01,rounding_size=0.015",
+            linewidth=1.3, edgecolor="#6D86A6", facecolor=color,
+            transform=ax.transAxes, zorder=2))
+        ax.text(xc, yb + BH * 0.67, title,
+            ha="center", va="center", fontsize=9, fontweight="bold",
+            color="#1F2D3D", transform=ax.transAxes, zorder=3)
+        ax.text(xc, yb + BH * 0.26, sub,
+            ha="center", va="center", fontsize=7, color="#304050",
+            transform=ax.transAxes, zorder=3)
+        return yb + BH
+
+    def _arr(x1, y1, x2, y2):
+        ax.add_patch(FancyArrowPatch(
+            (x1, y1), (x2, y2),
+            arrowstyle="-|>", mutation_scale=10,
+            linewidth=0.9, color=C_ARROW,
+            transform=ax.transAxes, zorder=4))
+
+    def _hline(x1, x2, y):
+        ax.plot([x1, x2], [y, y], color=C_ARROW, lw=0.9,
+            transform=ax.transAxes, zorder=4)
+
+    def _vline(x, y1, y2):
+        ax.plot([x, x], [y1, y2], color=C_ARROW, lw=0.9,
+            transform=ax.transAxes, zorder=4)
+
+    def _make_branch_specs(b_cnn_f, b_lstm_u):
+        if branch_type == "inception":
+            return [
+                ("Inception ×1", "Conv k=1 / k=3 / k=5 · Concat · BN"),
+                ("Inception ×2", "Conv k=1 / k=3 / k=5 · Concat · BN"),
+                ("GAP",          "GlobalAveragePooling1D"),
+                ("Dense(256)",   "ReLU · BN · Dropout(0.5)"),
+            ]
+        elif branch_type == "td_cnn_lstm":
+            return [
+                (f"TD Conv1D({b_cnn_f})",   "TimeDistributed, k=3, ReLU · BN"),
+                (f"TD Conv1D({b_cnn_f*2})", "TimeDistributed, k=3, ReLU · BN"),
+                (f"LSTM({b_lstm_u})",       "dropout=0.2 / rec_drop=0.2"),
+                ("Dense(256)",              "ReLU · BN · Dropout(0.5)"),
+            ]
+        else:  # cnn_lstm (défaut)
+            return [
+                (f"Conv1D({b_cnn_f})",   "k=3, ReLU · BN · Dropout"),
+                (f"Conv1D({b_cnn_f*2})", "k=3, ReLU · BN · Dropout"),
+                (f"LSTM({b_lstm_u})",    "dropout=0.2 / rec_drop=0.2"),
+                ("Dense(256)",           "ReLU · BN · Dropout(0.5)"),
+            ]
+
+    eye_specs  = _make_branch_specs(eye_cnn_f, eye_lstm_u)
+    head_specs = _make_branch_specs(head_cnn_f, head_lstm_u)
+    n_layers   = max(len(eye_specs), len(head_specs))
+
+    # ── Bloc Input ──────────────────────────────────────────────────────────
+    y_in_bot = 0.885
+    _box(CX, y_in_bot, "Input",
+         f"T={T} pas × {n_eye + n_head} features  (eye + head)", C_INPUT)
+
+    # ── Séparateur en T ──────────────────────────────────────────────────────
+    y_T = y_in_bot - 0.028
+    _vline(CX, y_in_bot, y_T)
+    _hline(LX, RX, y_T)
+
+    # ── Étiquettes de branches ───────────────────────────────────────────────
+    y_lbl = y_T - 0.006
+    ax.text(LX, y_lbl, f"Branche Eye  (×{n_eye})",
+        ha="center", va="top", fontsize=8, color="#2d6a4f",
+        fontweight="bold", transform=ax.transAxes)
+    ax.text(RX, y_lbl, f"Branche Head  (×{n_head})",
+        ha="center", va="top", fontsize=8, color="#0077b6",
+        fontweight="bold", transform=ax.transAxes)
+
+    # ── Blocs des deux branches ──────────────────────────────────────────────
+    y_b = y_lbl - 0.050 - BH
+    y_prev_b = None
+    for i in range(n_layers):
+        if i > 0:
+            y_b = y_prev_b - GAP - BH
+        e_title, e_sub = eye_specs[i]  if i < len(eye_specs)  else ("", "")
+        h_title, h_sub = head_specs[i] if i < len(head_specs) else ("", "")
+        _box(LX, y_b, e_title, e_sub, C_EYE)
+        _box(RX, y_b, h_title, h_sub, C_HEAD)
+        if i == 0:
+            _arr(LX, y_T, LX, y_b + BH)
+            _arr(RX, y_T, RX, y_b + BH)
+        else:
+            _arr(LX, y_prev_b, LX, y_b + BH)
+            _arr(RX, y_prev_b, RX, y_b + BH)
+        y_prev_b = y_b
+
+    y_last_bot = y_prev_b
+
+    # ── Convergence → Concat ───────────────────────────────────────────────
+    y_concat_bot = y_last_bot - 0.055 - BH
+    _arr(LX, y_last_bot, CX, y_concat_bot + BH)
+    _arr(RX, y_last_bot, CX, y_concat_bot + BH)
+    _box(CX, y_concat_bot, "Concat", "512 unités  (256 ⊕ 256)", C_FUSION)
+
+    # ── Dense fusion ──────────────────────────────────────────────────────
+    y_dense_bot = y_concat_bot - GAP - BH
+    _arr(CX, y_concat_bot, CX, y_dense_bot + BH)
+    _box(CX, y_dense_bot, "Dense(256)", "ReLU · BN · Dropout", C_FUSION)
+
+    # ── Sortie Softmax ────────────────────────────────────────────────────
+    y_out_bot = y_dense_bot - GAP - BH
+    _arr(CX, y_dense_bot, CX, y_out_bot + BH)
+    _box(CX, y_out_bot, "Softmax", "3 classes  low / medium / high", C_OUT)
+
+
 def visual_model_architecture_page(context, save_figure):
     model_profile = context["model_profile"] or {}
     feature_cols = context["feature_cols"] or []
@@ -301,12 +464,6 @@ def visual_model_architecture_page(context, save_figure):
     model_type = str(model_profile.get("model_type", "random_forest")).lower()
     task_type = str(model_profile.get("task_type", "unknown"))
 
-    blocks = _build_architecture_blocks(
-        model_type=model_type,
-        params=best_params,
-        task_type=task_type,
-        n_features=len(feature_cols),
-    )
     rows = _summarize_architecture_rows(model_type, task_type, best_params, model_profile=model_profile)
 
     fig = plt.figure(figsize=(11.7, 8.3))
@@ -316,6 +473,35 @@ def visual_model_architecture_page(context, save_figure):
 
     fig.suptitle("Architecture du modele", fontsize=15, fontweight="bold", y=0.98)
     _draw_architecture_schema(ax_schema, blocks)
+    if model_type == "multistream":
+        branch_type = str(
+            best_params.get("branch_type") or model_profile.get("branch_type", "cnn_lstm")
+        ).lower()
+        _BRANCH_LABELS = {
+            "inception":   "InceptionTime",
+            "td_cnn_lstm": "TD-CNN-LSTM",
+            "cnn_lstm":    "CNN-LSTM",
+        }
+        branch_label = _BRANCH_LABELS.get(branch_type, branch_type.upper())
+        fig = plt.figure(figsize=(11.7, 11.7))
+        gs = fig.add_gridspec(2, 1, height_ratios=[2.2, 1.0])
+        ax_schema = fig.add_subplot(gs[0])
+        ax_table  = fig.add_subplot(gs[1])
+        fig.suptitle("Architecture du modele", fontsize=14, fontweight="bold")
+        _draw_multistream_architecture(ax_schema, best_params, model_profile=model_profile)
+    else:
+        blocks = _build_architecture_blocks(
+            model_type=model_type,
+            params=best_params,
+            task_type=task_type,
+            n_features=len(feature_cols),
+        )
+        fig = plt.figure(figsize=(11.7, 8.3))
+        gs = fig.add_gridspec(2, 1, height_ratios=[1.2, 1.0])
+        ax_schema = fig.add_subplot(gs[0])
+        ax_table  = fig.add_subplot(gs[1])
+        fig.suptitle("Architecture du modele", fontsize=15, fontweight="bold")
+        _draw_architecture_schema(ax_schema, blocks)
 
     ax_table.axis("off")
     table = ax_table.table(
@@ -619,7 +805,7 @@ def visual_correlation_pages(context, save_figure):
             annot_kws={"size": 7},
             ax=ax,
         )
-        ax.set_title(f"Correlation (page {i + 1}/{n_corr_pages}) - {len(chunk)} features")
+        ax.set_title(f"Correlation (page {i + 1}/{n_corr_pages})  {len(chunk)} features")
         fig.tight_layout()
         save_figure(fig, f"corr_page_{i + 1}")
 
@@ -1398,11 +1584,71 @@ def visual_confusion_matrix_page(context, save_figure):
     cm = confusion_matrix(y_test, pred_test, labels=labels)
     fig, ax = plt.subplots(figsize=(8.5, 7))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=labels, yticklabels=labels, ax=ax)
-    ax.set_title("Matrice de confusion - Test")
+    ax.set_title("Matrice de confusion Test")
     ax.set_xlabel("Predit")
     ax.set_ylabel("Reel")
     fig.tight_layout()
     save_figure(fig, "confusion_matrix")
+
+
+def visual_multistream_feature_split_page(context, save_figure):
+    """Page tableau eye/head uniquement pour le modèle multistream."""
+    model_profile = context.get("model_profile") or {}
+    feature_cols = context.get("feature_cols") or []
+
+    if str(model_profile.get("model_type", "")).lower() != "multistream":
+        return
+    if not feature_cols:
+        return
+
+    n_eye = int(model_profile.get("n_eye_features", 3))
+    eye_cols  = [c for c in feature_cols[:n_eye]]
+    head_cols = [c for c in feature_cols[n_eye:]]
+    n_rows = max(len(eye_cols), len(head_cols))
+
+    cell_text = [
+        [
+            eye_cols[i]  if i < len(eye_cols)  else "",
+            head_cols[i] if i < len(head_cols) else "",
+        ]
+        for i in range(n_rows)
+    ]
+
+    fig, ax = plt.subplots(figsize=(11.7, max(4.0, n_rows * 0.42 + 2.5)))
+    ax.axis("off")
+    ax.set_title(
+        f"Séparation des flux de features pour le modèle multistream "
+        f"({len(eye_cols)} features eye / {len(head_cols)} features head)",
+        fontsize=13,
+        fontweight="bold",
+        pad=14,
+    )
+
+    table = ax.table(
+        cellText=cell_text,
+        colLabels=[
+            f"Branche Eye  (×{len(eye_cols)})",
+            f"Branche Head  (×{len(head_cols)})",
+        ],
+        cellLoc="left",
+        colLoc="left",
+        bbox=[0.08, 0.04, 0.84, 0.88],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10.5)
+    table.scale(1.0, 1.3)
+
+    for (row, col), cell in table.get_celld().items():
+        if row == 0:
+            cell.set_text_props(fontweight="bold")
+            cell.set_facecolor("#D4EDDA" if col == 0 else "#D1ECF1")
+        elif col == 0:
+            cell.set_facecolor("#f0faf2" if row % 2 == 0 else "#ffffff")
+        else:
+            cell.set_facecolor("#f0f8fb" if row % 2 == 0 else "#ffffff")
+
+    fig.tight_layout()
+    save_figure(fig, "multistream_feature_split")
 
 
 def visual_temporal_fft_by_feature_pages(context, save_figure):
@@ -1507,7 +1753,7 @@ def visual_temporal_fft_by_feature_pages(context, save_figure):
             axes[j].set_visible(False)
 
         fig.suptitle(
-            f"FFT par feature filtree - sujet {top_subject} (page {i + 1}/{n_pages})",
+            f"FFT par feature filtree  sujet {top_subject} (page {i + 1}/{n_pages})",
             fontsize=12,
             fontweight="bold",
             y=0.995,
@@ -1587,7 +1833,7 @@ def visual_temporal_preprocess_pages(context, save_figure):
                 ax_dyn.plot(raw_sub[time_col], raw_sub[feat], alpha=0.35, linewidth=1.1, color="#4C72B0", label="Avant")
             if feat in proc_sub.columns:
                 ax_dyn.plot(proc_sub[time_col], proc_sub[feat], alpha=0.95, linewidth=1.8, color="#55A868", label="Apres")
-            ax_dyn.set_title(f"Dynamique - {feat}")
+            ax_dyn.set_title(f"Dynamique {feat}")
             ax_dyn.set_xlabel("Temps (s)")
             ax_dyn.set_ylabel("Valeur")
             ax_dyn.grid(alpha=0.2)
@@ -1629,14 +1875,14 @@ def visual_temporal_preprocess_pages(context, save_figure):
                 if dedup_fft:
                     ax_fft.legend(dedup_fft.values(), dedup_fft.keys(), fontsize=8, loc="best")
 
-            ax_fft.set_title(f"FFT - {feat}")
+            ax_fft.set_title(f"FFT {feat}")
             ax_fft.set_xlabel("Frequence (Hz)")
             ax_fft.set_ylabel("Puissance (non normalisee)")
             ax_fft.set_xlim(0, fft_display_max_hz)
             ax_fft.grid(alpha=0.2)
 
         fig.suptitle(
-            f"Avant/Apres par feature filtree - sujet {top_subject} (page {page_idx + 1}/{n_pages})",
+            f"Avant/Apres par feature filtree  sujet {top_subject} (page {page_idx + 1}/{n_pages})",
             fontsize=12,
             fontweight="bold",
             y=0.995,
@@ -1649,6 +1895,7 @@ VISUAL_REPORT_FUNCTIONS = {
     "visual_cover_page": visual_cover_page,
     "visual_hypothesis_page": visual_hypothesis_page,
     "visual_model_architecture_page": visual_model_architecture_page,
+    "visual_multistream_feature_split_page": visual_multistream_feature_split_page,
     "visual_split_report": visual_split_report,
     "visual_metrics_table_page": visual_metrics_table_page,
     "visual_subject_window_performance_page": visual_subject_window_performance_page,
