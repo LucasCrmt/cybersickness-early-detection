@@ -704,20 +704,9 @@ def load_per_minute_targets(target_profile):
 
 def add_target(features_df, target_profile):
     source = target_profile["source"]
+    data_source = str(target_profile.get("data_source", "phase1")).strip().lower()
 
-    if source == "csv":
-        csv_path = target_profile["csv_path"]
-        if not os.path.exists(csv_path):
-            raise FileNotFoundError(f"Fichier cible introuvable: {csv_path}")
-        target_df = pd.read_csv(csv_path)
-
-    elif source == "xlsx":
-        xlsx_path = target_profile["xlsx_path"]
-        if not os.path.exists(xlsx_path):
-            raise FileNotFoundError(f"Fichier cible introuvable: {xlsx_path}")
-        target_df = pd.read_excel(xlsx_path, sheet_name=target_profile.get("sheet_name", 0))
-
-    elif source == "column_in_features":
+    if source == "column_in_features":
         tgt = target_profile["target_col"]
         if tgt not in features_df.columns:
             raise ValueError(f"Colonne cible introuvable dans features_df: {tgt}")
@@ -726,13 +715,39 @@ def add_target(features_df, target_profile):
             merged = merged.rename(columns={tgt: "target"})
         return merged.dropna(subset=["target"])
 
-    else:
+    def _read_file(path):
+        if not path or not os.path.exists(path):
+            raise FileNotFoundError(f"Fichier cible introuvable: {path}")
+        if source == "csv":
+            return pd.read_csv(path)
+        if source == "xlsx":
+            return pd.read_excel(path, sheet_name=target_profile.get("sheet_name", 0))
         raise ValueError("TARGET_PROFILE['source'] doit etre 'csv', 'xlsx' ou 'column_in_features'.")
 
-    t = _build_target_table(target_df, target_profile)
+    p1_key = "xlsx_path" if source == "xlsx" else "csv_path"
+    p2_key = "xlsx_path_phase2" if source == "xlsx" else "csv_path_phase2"
+
+    if data_source == "both":
+        path2 = target_profile.get(p2_key)
+        if not path2:
+            raise ValueError(f"target_profile['{p2_key}'] requis quand data_source='both'.")
+        t1 = _build_target_table(_read_file(target_profile.get(p1_key)), target_profile)
+        t2 = _build_target_table(_read_file(path2), target_profile)
+        t1["subject_id"] = t1["subject_id"].astype(str).str.strip() + "_P1"
+        t2["subject_id"] = t2["subject_id"].astype(str).str.strip() + "_P2"
+        t = pd.concat([t1, t2], ignore_index=True)
+    elif data_source == "phase2":
+        path2 = target_profile.get(p2_key)
+        if not path2:
+            raise ValueError(f"target_profile['{p2_key}'] requis quand data_source='phase2'.")
+        t = _build_target_table(_read_file(path2), target_profile)
+        t["subject_id"] = t["subject_id"].astype(str).str.strip()
+    else:
+        t = _build_target_table(_read_file(target_profile.get(p1_key)), target_profile)
+        t["subject_id"] = t["subject_id"].astype(str).str.strip()
+
     merged = features_df.copy()
     merged["subject_id"] = merged["subject_id"].astype(str).str.strip()
-    t["subject_id"] = t["subject_id"].astype(str).str.strip()
 
     if "minute" in t.columns:
         minute_col = target_profile.get("minute_col", "minute")
