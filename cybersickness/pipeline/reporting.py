@@ -472,7 +472,6 @@ def visual_model_architecture_page(context, save_figure):
     ax_table = fig.add_subplot(gs[1])
 
     fig.suptitle("Architecture du modele", fontsize=15, fontweight="bold", y=0.98)
-    _draw_architecture_schema(ax_schema, blocks)
     if model_type == "multistream":
         branch_type = str(
             best_params.get("branch_type") or model_profile.get("branch_type", "cnn_lstm")
