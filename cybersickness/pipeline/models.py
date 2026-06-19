@@ -104,8 +104,9 @@ def get_search_space(task_type, model_profile=None):
     
     if mt == "inception_time":
         return {
-            "filters": [2, 3],
+            "filters": [16, 32],
             "depth": [2, 3],
+            "bottleneck_size": [8, 16],
             "dropout_rate": [0.2, 0.3],
             "learning_rate": [0.001, 0.005],
             "batch_size": [16, 32],
@@ -192,40 +193,58 @@ def _build_cnn_1d(input_shape, output_shape, is_classif, params):
 
 
 def _build_inception_time(input_shape, output_shape, is_classif, params):
-    """Construit un modèle InceptionTime pour les séries temporelles."""
+    """InceptionTime (Fawaz et al. 2020) avec noyaux proportionnels à la fenêtre temporelle.
+
+    Les noyaux couvrent ~1/20, 1/10 et 1/5 de la fenêtre pour capturer
+    des patterns à courte, moyenne et longue portée temporelle.
+    Un bottleneck k=1 réduit les canaux avant les branches parallèles,
+    et une branche MaxPool capture les patterns haute fréquence locaux.
+    """
     if not TF_AVAILABLE:
         raise ImportError("TensorFlow/Keras n'est pas installé. Installez tensorflow pour utiliser InceptionTime.")
-    
-    filters = params.get("filters", 3)
+
+    T = input_shape[0]
+    filters = params.get("filters", 32)
     depth = params.get("depth", 2)
     dropout_rate = params.get("dropout_rate", 0.2)
-    
+    bottleneck_size = params.get("bottleneck_size", max(1, filters // 2))
+
+    # Noyaux impairs proportionnels à la longueur de fenêtre
+    def _odd(n):
+        n = max(1, n)
+        return n if n % 2 == 1 else n + 1
+
+    kernel_sizes = params.get(
+        "kernel_sizes",
+        [_odd(T // 20), _odd(T // 10), _odd(T // 5)],
+    )
+
     input_tensor = Input(shape=input_shape)
     x = input_tensor
-    
-    # Empile plusieurs blocs InceptionTime
+
     for _ in range(depth):
-        # Branche 1 : Conv 1x1
-        b1 = Conv1D(filters, 1, padding='same', activation='relu')(x)
-        
-        # Branche 2 : Conv 3x3
-        b2 = Conv1D(filters, 3, padding='same', activation='relu')(x)
-        
-        # Branche 3 : Conv 5x5
-        b3 = Conv1D(filters, 5, padding='same', activation='relu')(x)
-        
-        # Concaténation et normalisation
-        x = concatenate([b1, b2, b3])
+        bottleneck = Conv1D(bottleneck_size, 1, padding='same', use_bias=False)(x)
+
+        branches = [
+            Conv1D(filters, k, padding='same', use_bias=False)(bottleneck)
+            for k in kernel_sizes
+        ]
+        # Branche MaxPool : résidu local haute fréquence
+        mp = MaxPooling1D(pool_size=3, strides=1, padding='same')(x)
+        mp = Conv1D(filters, 1, padding='same', use_bias=False)(mp)
+        branches.append(mp)
+
+        x = concatenate(branches)
         x = BatchNormalization()(x)
+        x = Activation('relu')(x)
         x = Dropout(dropout_rate)(x)
-    
+
     x = GlobalAveragePooling1D()(x)
     x = Dense(64, activation='relu')(x)
     x = Dropout(dropout_rate)(x)
     output = Dense(output_shape, activation='softmax' if is_classif else 'linear')(x)
-    
-    model = Model(inputs=input_tensor, outputs=output)
-    return model
+
+    return Model(inputs=input_tensor, outputs=output)
 
 
 def _build_bilstm(input_shape, output_shape, is_classif, params):
@@ -405,6 +424,33 @@ def _build_multistream_fusion(input_shape, output_shape, is_classif, params):
         x = Dropout(0.5, name=f"inc_dropd_{name}")(x)
         return x
 
+    def _bilstm_branch(x_in, name, lstm_u):
+        """Branche BiLSTM empilée + Dense."""
+        x = Bidirectional(LSTM(lstm_u, return_sequences=True,
+                               dropout=dropout_rate, recurrent_dropout=0.1),
+                          name=f"bilstm1_{name}")(x_in)
+        x = Bidirectional(LSTM(lstm_u,
+                               dropout=dropout_rate, recurrent_dropout=0.1),
+                          name=f"bilstm2_{name}")(x)
+        x = Dense(256, activation="relu", name=f"dense_{name}")(x)
+        x = BatchNormalization(name=f"bn_d_{name}")(x)
+        x = Dropout(0.5, name=f"drop_d_{name}")(x)
+        return x
+
+    def _cnn_1d_branch(x_in, name, n_filt):
+        """Branche CNN 1D + GAP + Dense."""
+        x = Conv1D(n_filt, 3, activation="relu", padding="same",     name=f"conv1_{name}")(x_in)
+        x = BatchNormalization(name=f"bn1_{name}")(x)
+        x = Dropout(dropout_rate, name=f"drop1_{name}")(x)
+        x = Conv1D(n_filt * 2, 3, activation="relu", padding="same", name=f"conv2_{name}")(x)
+        x = BatchNormalization(name=f"bn2_{name}")(x)
+        x = Dropout(dropout_rate, name=f"drop2_{name}")(x)
+        x = GlobalAveragePooling1D(name=f"gap_{name}")(x)
+        x = Dense(256, activation="relu", name=f"dense_{name}")(x)
+        x = BatchNormalization(name=f"bn3_{name}")(x)
+        x = Dropout(0.5, name=f"drop3_{name}")(x)
+        return x
+
     inp    = Input(shape=(T, n_features), name="input_all")
     x_eye  = Lambda(lambda z: z[:, :, :n_eye],  name="slice_eye")(inp)
     x_head = Lambda(lambda z: z[:, :, n_eye:],  name="slice_head")(inp)
@@ -412,6 +458,12 @@ def _build_multistream_fusion(input_shape, output_shape, is_classif, params):
     if branch_type == "inception":
         feat_eye  = _inception_branch(x_eye,  "eye",  eye_cnn_f)
         feat_head = _inception_branch(x_head, "head", head_cnn_f)
+    elif branch_type == "bilstm":
+        feat_eye  = _bilstm_branch(x_eye,  "eye",  eye_lstm_u)
+        feat_head = _bilstm_branch(x_head, "head", head_lstm_u)
+    elif branch_type == "cnn_1d":
+        feat_eye  = _cnn_1d_branch(x_eye,  "eye",  eye_cnn_f)
+        feat_head = _cnn_1d_branch(x_head, "head", head_cnn_f)
     else:  # "cnn_lstm" (défaut)
         feat_eye  = _cnn_lstm_branch(x_eye,  "eye",  eye_cnn_f,  eye_lstm_u)
         feat_head = _cnn_lstm_branch(x_head, "head", head_cnn_f, head_lstm_u)

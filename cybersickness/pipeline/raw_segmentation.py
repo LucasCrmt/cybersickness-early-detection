@@ -99,7 +99,8 @@ def segment_sequences_by_minute(raw_df, feature_cols, target_df,
 def segment_sequences_sliding_window(raw_df, feature_cols, target_df,
                                      window_s=20.0, stride_s=10.0, T=200,
                                      subject_col="subject_id", time_col="time",
-                                     pad_value=0.0):
+                                     pad_value=0.0,
+                                     session_min_s=None, session_max_s=None):
     """Segmente un DataFrame en fenêtres glissantes de window_s secondes.
 
     Chaque fenêtre est rééchantillonnée à T points par interpolation linéaire.
@@ -109,15 +110,17 @@ def segment_sequences_sliding_window(raw_df, feature_cols, target_df,
     Les fenêtres dont le centre tombe dans une minute sans label sont ignorées.
 
     Args:
-        raw_df      : DataFrame long [subject_col, time_col, *feature_cols]
-        feature_cols: liste de colonnes à extraire
-        target_df   : DataFrame [subject_col, 'minute', 'target']
-        window_s    : durée de la fenêtre en secondes
-        stride_s    : décalage entre fenêtres en secondes
-        T           : nombre de timesteps par fenêtre (rééchantillonnage uniforme)
-        subject_col : colonne identifiant le sujet
-        time_col    : colonne de temps en secondes
-        pad_value   : valeur de remplissage si données insuffisantes
+        raw_df        : DataFrame long [subject_col, time_col, *feature_cols]
+        feature_cols  : liste de colonnes à extraire
+        target_df     : DataFrame [subject_col, 'minute', 'target']
+        window_s      : durée de la fenêtre en secondes
+        stride_s      : décalage entre fenêtres en secondes
+        T             : nombre de timesteps par fenêtre (rééchantillonnage uniforme)
+        subject_col   : colonne identifiant le sujet
+        time_col      : colonne de temps en secondes
+        pad_value     : valeur de remplissage si données insuffisantes
+        session_min_s : si défini, n'inclut que les fenêtres dont le centre >= session_min_s
+        session_max_s : si défini, n'inclut que les fenêtres dont le centre <  session_max_s
 
     Returns:
         X      : np.ndarray (n_windows, T, n_features) float32
@@ -161,6 +164,14 @@ def segment_sequences_sliding_window(raw_df, feature_cols, target_df,
         while ws + window_s <= t_max + 1e-9:
             we = ws + window_s
             t_center = ws + window_s / 2.0
+
+            if session_min_s is not None and t_center < session_min_s:
+                ws += stride_s
+                continue
+            if session_max_s is not None and t_center >= session_max_s:
+                ws += stride_s
+                continue
+
             minute = int(np.floor(t_center / 60.0))
             key = (str(sid).strip(), minute)
 
